@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "repositories": [],
+  "runtime": {
+    "dataRoot": null,
+    "workspaceRoot": null,
+    "maxConcurrentTasks": 1,
+    "maxConcurrentTasksPerRepository": 1,
+    "requireNativeDsh": true
+  },
+  "executor": {
+    "adapter": "dsh-codex-subagent",
+    "providerRef": null,
+    "modelRef": null,
+    "reasoningEffort": null
+  },
+  "review": {
+    "reviewers": [
+      {
+        "id": "primary-reviewer",
+        "adapter": "dsh-model",
+        "providerRef": null,
+        "modelRef": null,
+        "required": true
+      }
+    ],
+    "requireDifferentModelFamilyFromExecutor": true,
+    "maxFormatRetries": 1,
+    "maxEvidenceChecksPerFinding": 1
+  },
+  "verificationProfiles": [],
+  "limits": {
+    "maxRepairRounds": 2,
+    "maxProviderInvocations": 12,
+    "taskTimeoutSeconds": 3600,
+    "stepTimeoutSeconds": 600,
+    "maxLogBytesPerCheck": 2000000,
+    "maxContextBytesPerCall": 500000
+  },
+  "policy": {
+    "allowArbitraryCodeNetwork": false,
+    "allowedModelEndpoints": [],
+    "requireVerifiedFilesystemBoundary": true,
+    "requireVerifiedProcessCancellation": true,
+    "allowPartialEnforcement": false,
+    "allowPush": false,
+    "allowMerge": false,
+    "allowDeploy": false,
+    "allowGlobalConfigChanges": false,
+    "allowLocalCommit": false,
+    "allowExecutorApproval": false,
+    "allowedWriteGlobs": [],
+    "protectedGlobs": []
+  },
+  "delivery": {
+    "mode": "patch",
+    "requireHumanAcceptance": true
+  },
+  "testing": {
+    "liveEnabled": false,
+    "fixtureRepositoryRef": "fixture-pagination"
+  }
+}

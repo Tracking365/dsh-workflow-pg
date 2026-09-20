@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "bugfix",
+  "title": "修复分页参数归一化错误",
+  "description": "normalizePage 对 0、负数、非整数及非有限数值没有返回默认第 1 页。请修复，并保持正整数页码原样返回。只在临时样例仓库运行。",
+  "repositoryRef": "fixture-pagination",
+  "baseRef": "HEAD",
+  "reproduction": {
+    "steps": [
+      "使用 fixture 生成器创建故意带 Bug 的临时 TypeScript 仓库。",
+      "在基准版本执行 normalizePage(0)。",
+      "运行事先规定的回归测试，确认失败原因是返回值断言。"
+    ],
+    "expected": "0 返回 1；undefined、负数、非整数、NaN、Infinity 返回 1；正整数原样返回。",
+    "actual": "故障实现 input ?? 1 会原样返回 0 等非法数值。"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC-01",
+      "description": "undefined、0、负数、非整数、NaN、Infinity 均返回 1。"
+    },
+    {
+      "id": "AC-02",
+      "description": "正整数页码原样返回。"
+    },
+    {
+      "id": "AC-03",
+      "description": "同一冻结回归测试在基准代码失败、候选代码通过；必需检查通过。"
+    },
+    {
+      "id": "AC-04",
+      "description": "不修改用户主工作区，不 push，不合并，不部署。"
+    }
+  ],
+  "verificationProfile": "fixture-pagination",
+  "contextRefs": [],
+  "idempotencyKey": "fixture-pagination-bugfix-v1"
+}
