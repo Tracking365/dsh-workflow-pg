@@ -1,7 +1,42 @@
-# DSH compatibility
+# DSH compatibility — source verified, runtime unverified
 
-当前结论：blocked / unverified。
+Checked 2026-09-20 against official source/documentation; no DSH installation was available
+in the execution container. Do not describe this as an installed or locked DSH dependency.
 
-交接包给出了 DSH 官方文档入口，但当前工作区没有锁定的 DSH/Cordis 依赖或源码。因此没有足够证据声明插件入口、Context、工具注册、bundle/profile、子代理或取消接口。实现中暂不编写猜测性的 DSH import。
+Sources:
 
-解除阻塞需要：锁定 DSH 版本、可读取的类型/源码、独立测试 profile，以及授权的 Codex/审核路由配置。核验后应补充包名、版本、符号路径、调用结果和安装产物测试。
+- https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/tools/package.json
+  inspected version: `@deepseek-ai/dsh-tools` **0.1.6-alpha.2**;
+  blob `041bf5570bb9c564e1d61fd2a9ce753c731a32f0`.
+- https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/tools/src/index.ts
+  inspected source blob `6be7be61e257cd9e38c8a3122298316bf3df9892`.
+  `ToolDefinition` extends `ToolSchema`, requires `output.schema`,
+  `output.render(args,value)` and `execute(args,exec)`, with `exec.signal`.
+  `ToolRuntime.register` is the registration seam.
+- https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish
+  `dsh.bundle.patch`, insert rows and `dsh plugin --profile ... add ...tgz`.
+- https://deepseek-harness.github.io/deepseek-harness/develop/framework/lifecycle
+  Cordis plugin lifecycle; actual disposal behavior must be checked against the installed version.
+- https://api-docs.deepseek.com/api/create-chat-completion
+  Reference for the separate HTTP adapter; protocol behavior was tested with injected responses,
+  not against a live endpoint.
+
+`native/index.mjs` uses the documented raw tool-definition interface without importing a
+second runtime copy or declaring a fabricated Context type. It exports name/inject/apply.
+The pack smoke imports this boundary and checks definitions directly; it does NOT call a
+mock Context and claim native integration.
+
+## Remaining compatibility gate
+
+Install and pin a real DSH runtime in an isolated profile; verify tools service injection,
+JSON input/output schema acceptance, all seven registrations via `ctx.tools.execute`,
+caller cancellation, dispose/reload, package resolution and profile isolation. Then record
+the exact runtime commit and results. Until then A03 and native parts of A02/A04 are blocked.
+
+## Toolchain decision
+
+Node >=22.13 is required for built-in SQLite. TypeScript 5.7.2 and @types/node 22.10.2 remain
+pinned from the original repository; unused tsx/esbuild tooling was removed because tests
+run compiled JS. Package-lock retains the original integrity values for the three remaining
+packages. This sandbox used global TypeScript 5.8.3 and @types/node 25.1.0; exact locked npm
+installation could not be exercised offline and must be rerun in the target environment.
