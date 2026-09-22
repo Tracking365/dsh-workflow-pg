@@ -17,7 +17,7 @@ const taskSchema = record({
   kind: { type: "string", enum: ["bugfix"] }, title: string, description: string, repositoryRef: string,
   baseRef: string, reproduction: record({ steps: list, expected: string, actual: string }),
   acceptanceCriteria: { type: "array", minItems: 1, items: record({ id: string, description: string }) },
-  verificationProfile: string, contextRefs: list, idempotencyKey: string,
+  verificationProfile: string, contextRefs: list, regressionOverlayRefs: list, idempotencyKey: string,
 }, ["kind", "title", "description", "repositoryRef", "reproduction", "acceptanceCriteria", "verificationProfile"]);
 const idSchema = record({ taskId: string });
 const parseId = args => text(object(args, ["taskId"]).taskId, "taskId", 100);

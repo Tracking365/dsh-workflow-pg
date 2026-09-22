@@ -91,14 +91,22 @@ host-owned file, not a task payload, and must not be writable by a code executio
       "path": "/absolute/path/to/a/test-repo",
       "allowedPaths": ["src/"],
       "protectedPaths": ["test/"],
-      "contextPaths": ["docs/", "CONTRIBUTING.md"]
+      "contextPaths": ["docs/", "CONTRIBUTING.md"],
+      "regressionOverlays": {
+        "invalid-page-zero": {
+          "source": "/absolute/path/outside/repos/host-regression-overlays/invalid-page-zero.test.mjs",
+          "target": "test/invalid-page-zero.regression.test.mjs",
+          "verificationProfile": "node-tap",
+          "baselineFailureMarker": "INVALID_PAGE_ZERO_REGRESSION"
+        }
+      }
     }
   },
   "verificationProfiles": {
     "node-tap": [{
       "id": "regression",
       "command": "/absolute/path/to/node",
-      "args": ["--test", "--test-reporter=tap", "test/page.test.mjs"],
+      "args": ["--test", "--test-reporter=tap", "test/page.test.mjs", "test/invalid-page-zero.regression.test.mjs"],
       "criteria": ["A1"],
       "timeoutMs": 10000
     }]
@@ -132,6 +140,34 @@ the context, its fresh candidate clone must hash-match that frozen manifest.
 This is a small, explicit reference bundle, not a semantic code search or a production credential
 boundary. The native disabled policy still blocks execution; do not treat this configuration as an
 authorization to run a model against a business repository.
+
+### Optional frozen regression overlays
+
+`regressionOverlays` is a separate host-owned map. A task can pass only
+`regressionOverlayRefs`—up to eight short map keys—not a source path, target, command, test body,
+or failure condition. Each map entry must use an existing regular UTF-8 source file outside both the
+repository and `dataRoot`, a new individual target below `protectedPaths`, one existing verification
+profile, and an exact non-secret `baselineFailureMarker`. The configured profile must actually run
+the target file.
+
+At creation DevKit copies and hashes the source (at most 16 KiB each and 48 KiB total) into
+`regression-overlays/<manifest-hash>.json` under the private 0700/0600 data root. It rejects
+symlink/fifo sources, NUL/non-UTF-8 bytes, suspected secrets, duplicate targets, source files inside
+the repository/control plane, and targets that already exist at the pinned Git base. The task record
+and the overlay-manifest event retain only ref/target/size/hash/marker-hash descriptors; ordinary
+verification evidence can contain the required non-secret marker by design.
+
+Before the baseline reproduction, the fresh candidate gets exactly those frozen bytes once. Every
+overlay must produce its host-declared literal marker in a `failed_assertion` result; otherwise no
+writer is dispatched. The overlay is then protected by the frozen-test hash for the whole run. It is
+also deliberately omitted from the delivery patch: DevKit rebuilds the candidate Git index from the
+base and stages only `allowedPaths`, so a writer cannot smuggle a protected or untracked test through
+its index. The content and marker are still host assertions, not independent evidence or a general
+semantic proof for an arbitrary business bug.
+
+The content-locked `pagination-v1` native fixture rejects this option. The normal native policy
+remains `executionMode: "disabled"`; configuring an overlay neither starts a model nor enables live
+execution.
 
 ### Optional local approval presentation
 

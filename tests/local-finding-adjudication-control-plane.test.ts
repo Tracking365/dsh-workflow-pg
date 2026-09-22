@@ -10,7 +10,10 @@ function form(values: Record<string, string>): string {
 }
 
 async function eventually<T>(read: () => T | undefined, message: string): Promise<T> {
-  const deadline = Date.now() + 2000;
+  // The whole suite intentionally starts several independent Node workers.
+  // Keep this bounded but leave enough scheduling room for the candidate's
+  // real Git/TAP fixture to reach the local broker on a loaded host.
+  const deadline = Date.now() + 5000;
   for (;;) {
     const value = read();
     if (value !== undefined) return value;

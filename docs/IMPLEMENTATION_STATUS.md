@@ -37,6 +37,19 @@ bounded, re-redacted prompt context. Fixture tests cover source advancement afte
 host-policy rejection, suspected secrets, native fixture rejection, and corrupt-artifact blocking.
 This is not semantic retrieval and does not change the disabled live gate.
 
+Frozen-regression-overlay increment (2026-09-23): a host policy can map a short task-visible ref to
+one external regular test source, a new protected target, an existing verification profile, and a
+bounded non-secret baseline-failure marker. Task payloads cannot carry source paths, test bodies,
+commands, target paths, or markers. Creation freezes at most eight UTF-8 sources (16 KiB each,
+48 KiB total) into a private 0700/0600 artifact; repository/data-root sources, direct symlinks,
+existing-base targets, unprotected targets, profile mismatches and likely secrets fail closed. The
+candidate receives the frozen test before baseline reproduction, which must emit every overlay marker
+through a failed assertion before a writer can start. Overlay bytes remain frozen under the protected
+test hash and are excluded from the delivery patch by rebuilding the Git index at the base and staging
+only `allowedPaths`. Tests cover task/input policy rejection, source advancement, private metadata,
+corruption, marker absence, target mutation, native fixture rejection, and index-smuggling resistance.
+This is a host assertion, not general semantic failure proof or a live-execution authorization.
+
 Recovery-control increment (2026-09-23): an explicit disabled host policy may configure
 `recoveryControlPlane`, which creates a separate `127.0.0.1` local-secret page and host-only
 `LocalRecoveryApprovalBroker`. It can request recovery only for a retained interrupted task,
@@ -73,8 +86,7 @@ Next work, in order:
 2. Wire the direct client to native execution only after that transport boundary exists; then
    verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
    authorized disposable fixtures only.
-3. Add a host-authorized frozen regression overlay and harden local adjudication/recovery from
-   private-local assertions toward independently auditable evidence and identity/process proof;
-   evolve frozen context only with explicit bounds and evidence. Never reclaim a lease based on
-   age alone.
+3. Harden local adjudication/recovery and frozen-context/overlay evidence from private-local
+   assertions toward independently auditable identity, process proof and framework-aware failure
+   evidence. Never reclaim a lease based on age alone.
 4. Finish the original acceptance matrix before UI/feature extensions.

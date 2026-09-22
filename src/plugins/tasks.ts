@@ -7,6 +7,7 @@ import { evidenceGate, type CheckEvidence } from "../domain/state-machine.js";
 import { resolveRealWithin, redact } from "../domain/security.js";
 import { TaskStore, type TaskLease } from "../adapters/store.js";
 import { ContextStore, type LoadedContext } from "../adapters/context.js";
+import { RegressionOverlayStore, type LoadedRegressionOverlay, type RegressionOverlayDefinition } from "../adapters/regression-overlay.js";
 import { runCommand, type CommandConfinement, type CommandSpec } from "../adapters/process.js";
 import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, exportPatch, writeArtifact, type Snapshot } from "../adapters/workspace.js";
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
@@ -16,7 +17,10 @@ export interface RepositoryPolicy {
   protectedPaths: string[];
   /** Optional host-owned read allowlist for immutable task context files. */
   contextPaths?: string[];
+  /** Optional host-owned test sources that may be frozen into a fresh candidate. */
+  regressionOverlays?: Record<string, RegressionOverlayPolicy>;
 }
+export interface RegressionOverlayPolicy extends RegressionOverlayDefinition {}
 /** Trusted host metadata only; the credential value remains outside JSON policy. */
 export interface ReviewerPolicy { endpoint: string; model: string; credentialEnv: string; timeoutMs?: number }
 /**
@@ -145,6 +149,7 @@ export class Devkit {
   private readonly policy: HostPolicy;
   private readonly policyHash: string;
   private readonly contexts: ContextStore;
+  private readonly regressionOverlays: RegressionOverlayStore;
   private readonly active = new Map<string, ActiveRun>();
   private readonly recovering = new Set<string>();
   private closing = false;
@@ -167,8 +172,26 @@ export class Devkit {
           throw new DevkitError("INVALID_CONTEXT_POLICY", reference);
         }
       }
+      const targets = new Set<string>();
+      for (const [reference, overlay] of Object.entries(repo.regressionOverlays ?? {})) {
+        try {
+          const source = path.resolve(overlay.source), canonical = realpathSync(source);
+          const sourceStat = lstatSync(source);
+          if (sourceStat.isSymbolicLink() || !sourceStat.isFile() || !lstatSync(canonical).isFile()) throw new DevkitError("REGRESSION_OVERLAY_SOURCE_UNAVAILABLE", reference);
+          if (canonical === base || canonical.startsWith(`${base}${path.sep}`)) throw new DevkitError("REGRESSION_OVERLAY_SOURCE_INSIDE_REPOSITORY", reference);
+          if (canonical === data || canonical.startsWith(`${data}${path.sep}`)) throw new DevkitError("REGRESSION_OVERLAY_SOURCE_INSIDE_CONTROL_PLANE", reference);
+          if (!repo.protectedPaths.some(scope => overlay.target === scope || (scope.endsWith("/") && overlay.target.startsWith(scope)))) throw new DevkitError("REGRESSION_OVERLAY_TARGET_NOT_PROTECTED", reference);
+          resolveRealWithin(base, overlay.target);
+          if (targets.has(overlay.target)) throw new DevkitError("DUPLICATE_REGRESSION_OVERLAY_TARGET", overlay.target);
+          targets.add(overlay.target);
+        } catch (error) {
+          if (error instanceof DevkitError) throw error;
+          throw new DevkitError("REGRESSION_OVERLAY_SOURCE_UNAVAILABLE", reference);
+        }
+      }
     }
     this.contexts = new ContextStore(resolveRealWithin(realpathSync(policy.dataRoot), "contexts"));
+    this.regressionOverlays = new RegressionOverlayStore(resolveRealWithin(realpathSync(policy.dataRoot), "regression-overlays"));
     this.store = new TaskStore(path.join(policy.dataRoot, "tasks.sqlite"));
   }
   create(raw: unknown): TaskRecord {
@@ -181,7 +204,10 @@ export class Devkit {
     const frozenContext = input.contextRefs?.length
       ? this.contexts.freeze(repository.path, baseCommit, input.contextRefs, repository.contextPaths ?? [])
       : undefined;
-    return this.store.create(input, this.policyHash, baseCommit, frozenContext);
+    const frozenRegressionOverlay = input.regressionOverlayRefs?.length
+      ? this.regressionOverlays.freeze(repository.path, baseCommit, input.regressionOverlayRefs, repository.regressionOverlays ?? {}, input.verificationProfile)
+      : undefined;
+    return this.store.create(input, this.policyHash, baseCommit, frozenContext, frozenRegressionOverlay);
   }
   status(id: string): TaskRecord { return this.store.get(id); }
   doctor(): object {
@@ -195,6 +221,7 @@ export class Devkit {
         : { state: "disabled" },
       executor: this.adapters.executor ? { family: this.adapters.executor.family, kind: this.adapters.executor.kind } : { state: "unconfigured" },
       reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" },
+      regressionOverlays: { definitions: Object.values(this.policy.repositories).reduce((count, repository) => count + Object.keys(repository.regressionOverlays ?? {}).length, 0) },
       recovery: this.adapters.recoveryAuthority ? { state: "configured", authority: "host-only" } : { state: "unconfigured" },
       findingAdjudication: this.adapters.findingAdjudicator ? { state: "configured", authority: "host-only" } : { state: "unconfigured" } };
   }
@@ -255,6 +282,25 @@ export class Devkit {
       } else if (task.frozenContext !== undefined) {
         throw new DevkitError("CONTEXT_MANIFEST_UNEXPECTED");
       }
+      let regressionOverlay: LoadedRegressionOverlay | undefined;
+      const requestedRegressionOverlays = task.input.regressionOverlayRefs ?? [];
+      if (requestedRegressionOverlays.length) {
+        if (!task.frozenRegressionOverlay
+          || task.frozenRegressionOverlay.baseCommit !== base
+          || requestedRegressionOverlays.length !== task.frozenRegressionOverlay.files.length
+          || requestedRegressionOverlays.some((reference, index) => reference !== task.frozenRegressionOverlay?.files[index]?.ref)) {
+          throw new DevkitError("REGRESSION_OVERLAY_MANIFEST_MISMATCH");
+        }
+        regressionOverlay = this.regressionOverlays.load(task.frozenRegressionOverlay);
+        this.regressionOverlays.apply(regressionOverlay, work);
+        set({}, "regression_overlay_loaded", {
+          manifestHash: regressionOverlay.manifest.manifestHash,
+          baseCommit: regressionOverlay.manifest.baseCommit,
+          files: regressionOverlay.manifest.files,
+        });
+      } else if (task.frozenRegressionOverlay !== undefined) {
+        throw new DevkitError("REGRESSION_OVERLAY_MANIFEST_UNEXPECTED");
+      }
       const baseline = capture(), protectedHash = frozenHash(baseline, repo.protectedPaths);
       set({}, "baseline_snapshot", baseline);
       if (!repo.protectedPaths.length || !baseline.files.some((f) => repo.protectedPaths.some((p) => f.path === p || (p.endsWith("/") && f.path.startsWith(p))))) throw new DevkitError("FROZEN_TESTS_MISSING");
@@ -264,6 +310,7 @@ export class Devkit {
       };
       stage("reproduce");
       let reproduced = false;
+      const observedOverlayFailureMarkers = new Set<string>();
       for (const check of checks) {
         const result = await runCommand(check, work, signal, this.adapters.commandConfinement); stopped = result.stopped;
         set({}, "reproduction", { ...result, snapshotId: baseline.id });
@@ -271,9 +318,15 @@ export class Devkit {
         if (!stopped) throw new DevkitError("STOP_UNCONFIRMED");
         if (result.classification === "cancelled") throw new DevkitError("CANCELLED");
         if (result.classification === "failed_infrastructure") throw new DevkitError("REPRODUCTION_INFRASTRUCTURE_ERROR");
-        if (result.classification === "failed_assertion") reproduced = true;
+        if (result.classification === "failed_assertion") {
+          reproduced = true;
+          for (const overlay of regressionOverlay?.files ?? []) {
+            if (`${result.stdout}\n${result.stderr}`.includes(overlay.baselineFailureMarker)) observedOverlayFailureMarkers.add(overlay.ref);
+          }
+        }
       }
       if (!reproduced) throw new DevkitError("NOT_REPRODUCED");
+      if (regressionOverlay && observedOverlayFailureMarkers.size !== regressionOverlay.files.length) throw new DevkitError("REGRESSION_OVERLAY_NOT_REPRODUCED");
       let feedback = "";
       for (;;) {
         stage("implement");
@@ -310,7 +363,7 @@ export class Devkit {
         if (failed) { feedback = "Required verification failed; preserve the frozen tests."; }
         else {
           stage("review");
-          const patch = exportPatch(work, base);
+          const patch = exportPatch(work, base, repo.allowedPaths, regressionOverlay?.files.map(file => file.target) ?? []);
           const reviewed = validateReview(await reviewer.review({ snapshotId: candidate.id, task: task.input, patch, evidence, signal }), candidate.id);
           if (capture().id !== candidate.id) throw new DevkitError("REVIEW_MUTATED_SOURCE");
           set({}, "review", reviewed);

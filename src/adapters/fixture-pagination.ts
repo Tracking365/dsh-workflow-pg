@@ -56,7 +56,7 @@ export function assertPaginationFixturePolicy(policy: HostPolicy): void {
   const repositories = Object.entries(policy.repositories);
   if (repositories.length !== 1 || repositories[0]?.[0] !== "fixture") throw new DevkitError("FIXTURE_REPOSITORY_POLICY_INVALID");
   const repository = repositories[0]?.[1];
-  if (policy.recoveryControlPlane !== undefined || policy.findingAdjudicationControlPlane !== undefined || !repository || repository.contextPaths !== undefined || !sameList(repository.allowedPaths, ["src/"]) || !sameList(repository.protectedPaths, ["test/"])) throw new DevkitError("FIXTURE_REPOSITORY_POLICY_INVALID");
+  if (policy.recoveryControlPlane !== undefined || policy.findingAdjudicationControlPlane !== undefined || !repository || repository.contextPaths !== undefined || repository.regressionOverlays !== undefined || !sameList(repository.allowedPaths, ["src/"]) || !sameList(repository.protectedPaths, ["test/"])) throw new DevkitError("FIXTURE_REPOSITORY_POLICY_INVALID");
   const profiles = Object.entries(policy.verificationProfiles);
   if (profiles.length !== 1 || profiles[0]?.[0] !== "regression") throw new DevkitError("FIXTURE_VERIFICATION_POLICY_INVALID");
   const checks = profiles[0]?.[1];

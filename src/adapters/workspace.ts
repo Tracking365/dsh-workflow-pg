@@ -62,9 +62,19 @@ export function assertScope(before: Snapshot, after: Snapshot, allowed: readonly
 export function frozenHash(snap: Snapshot, protectedPaths: readonly string[]): string {
   return hash(snap.files.filter((f) => protectedPaths.some((p) => f.path === p || (p.endsWith("/") && f.path.startsWith(p)))));
 }
-export function exportPatch(work: string, baseCommit: string): string {
+/**
+ * Build the delivery patch from a reset candidate index and trusted allowed
+ * paths only, then removes explicit frozen artifacts. This prevents an
+ * executor from smuggling protected/untracked files through its Git index
+ * (including host-mounted regression overlays), even if a host policy's
+ * allowed/protected paths overlap.
+ */
+export function exportPatch(work: string, baseCommit: string, allowedPaths: readonly string[], excludedPaths: readonly string[] = []): string {
   if (git(work, ["rev-parse", "HEAD"]).trim() !== baseCommit) throw new DevkitError("GIT_HEAD_CHANGED");
-  git(work, ["add", "--all", "--force", "--", "."]);
+  if (!allowedPaths.length) throw new DevkitError("INVALID_PATCH_SCOPE");
+  git(work, ["read-tree", baseCommit]);
+  git(work, ["add", "--all", "--force", "--", ...allowedPaths]);
+  if (excludedPaths.length) git(work, ["update-index", "--force-remove", "--", ...excludedPaths]);
   const patch = git(work, ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", baseCommit, "--"]);
   if (redact(patch) !== patch) throw new DevkitError("POSSIBLE_SECRET_IN_PATCH");
   return patch;

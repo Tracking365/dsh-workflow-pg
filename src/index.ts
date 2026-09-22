@@ -15,6 +15,7 @@ export * from "./adapters/local-finding-adjudication-broker.js";
 export * from "./adapters/local-finding-adjudication-control-plane.js";
 export * from "./adapters/workspace.js";
 export * from "./adapters/context.js";
+export * from "./adapters/regression-overlay.js";
 export * from "./adapters/review.js";
 export * from "./adapters/executor-dsh-codex.js";
 export * from "./adapters/fixture-pagination.js";

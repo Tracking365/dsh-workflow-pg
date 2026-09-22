@@ -54,6 +54,22 @@ hashes, never the text. Before dispatch, the fresh candidate must hash-match eve
 The bounded Codex renderer redacts again. This is not a complete secret detector, semantic retriever,
 or an OS security boundary.
 
+Optional frozen regression overlays are distinct from task context. A task selects only up to eight
+short `regressionOverlayRefs`; the host policy maps each ref to one external regular source file, a
+new file target under `protectedPaths`, a fixed existing verification profile and one bounded literal
+baseline-failure marker. DevKit rejects a source inside the repository or its control-plane data root,
+direct symlinks/non-files, non-UTF-8/NUL/secret-looking content, duplicate targets, an existing target
+at the pinned Git base, unprotected targets, and a profile mismatch. It freezes no more than 16 KiB per
+source / 48 KiB total in `dataRoot/regression-overlays` (0700 directory, 0600 artifact); task records
+and overlay-manifest events retain only ref/target/size/hash/marker-hash descriptors. Ordinary command
+evidence can contain the deliberately non-secret marker. Before any writer dispatch, the
+candidate receives the frozen bytes and each overlay's host-declared marker must occur in a failed
+assertion result from the fixed verification plan. The candidate snapshot then treats the overlay as a
+frozen protected test. Patch export rebuilds the Git index at the base and stages only `allowedPaths`,
+so a writer-controlled index cannot smuggle this untracked test or another protected file into the
+delivery artifact. Marker matching is a constrained host assertion, not independent evidence, a test
+framework parser, or a semantic proof of arbitrary business behavior.
+
 Shell interpolation is not used. Child processes get an environment allowlist, not model
 keys or NODE_OPTIONS. Output and model context are bounded. The HTTP reviewer has no tools,
 uses explicit HTTPS configuration and a separate credential callback, rejects redirects,
@@ -197,14 +213,15 @@ identity, or a live-review guarantee.
   assertion that the old writer stopped; it still has no multi-user identity or live process
   proof. Public `resume` remains unable to release a retained lease.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.
-* Reproduction uses a frozen, trusted Node TAP test plan. A general-purpose expected failure
-  signature and newly proposed regression overlay are not implemented. A failed assertion
-  alone is not sufficient for arbitrary business bugs outside this fixture.
+* Reproduction uses a frozen, trusted Node TAP test plan. A narrow host-authorized regression-overlay
+  path can require a literal marker from a failed assertion, but it is not a general-purpose expected-
+  failure-signature language or proof of arbitrary business bugs.
 * A host `confirmFinding` callback remains a compatibility test seam. The local finding-
   adjudication presentation binds and logs a human decision but does not create independent
   evidence, a multi-user authorization boundary, or live reviewer behavior.
 * A small frozen task-context bundle is available, but it is explicit Git-base text only—not a
-  complete semantic project-context retriever, regression overlay, or large-repository search.
+  complete semantic project-context retriever or large-repository search. Frozen regression overlays
+  are separately bounded host artifacts, not a general test generator.
 * Process cancellation is exercised by the fixture on macOS. Windows behavior and all live
   execution behavior remain unverified; fixture process groups are not an OS sandbox.
 

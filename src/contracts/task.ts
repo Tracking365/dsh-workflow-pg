@@ -10,7 +10,7 @@ export interface TaskInput {
   readonly repositoryRef: string; readonly baseRef?: string;
   readonly reproduction: { readonly steps: string[]; readonly expected: string; readonly actual: string };
   readonly acceptanceCriteria: AcceptanceCriterion[]; readonly verificationProfile: string;
-  readonly contextRefs?: string[]; readonly idempotencyKey?: string;
+  readonly contextRefs?: string[]; readonly regressionOverlayRefs?: string[]; readonly idempotencyKey?: string;
 }
 /** Metadata only; frozen context text is stored in a private host artifact. */
 export interface FrozenContextFile { readonly path: string; readonly hash: string; readonly size: number }
@@ -20,6 +20,21 @@ export interface FrozenContext {
   readonly manifestHash: string;
   readonly files: readonly FrozenContextFile[];
 }
+/** Metadata only; frozen host-owned regression-test bytes stay in a private artifact. */
+export interface FrozenRegressionOverlayFile {
+  readonly ref: string;
+  readonly target: string;
+  readonly hash: string;
+  readonly size: number;
+  /** Hash of a host-declared literal that must occur in the failing baseline output. */
+  readonly baselineFailureMarkerHash: string;
+}
+export interface FrozenRegressionOverlay {
+  readonly schemaVersion: 1;
+  readonly baseCommit: string;
+  readonly manifestHash: string;
+  readonly files: readonly FrozenRegressionOverlayFile[];
+}
 export interface TaskRecord {
   readonly schemaVersion: 1; readonly taskId: string; readonly inputHash: string;
   readonly input: TaskInput; readonly status: TaskStatus; readonly stage: TaskStage;
@@ -27,6 +42,7 @@ export interface TaskRecord {
   readonly version: number; readonly createdAt: string; readonly updatedAt: string;
   readonly policyHash: string; readonly baseCommit?: string; readonly workspace?: string;
   readonly snapshotId?: string; readonly runId?: string; readonly frozenContext?: FrozenContext;
+  readonly frozenRegressionOverlay?: FrozenRegressionOverlay;
 }
 export class DevkitError extends Error {
   constructor(readonly code: string, detail = "") { super(detail ? `${code}: ${detail}` : code); this.name = "DevkitError"; }
@@ -57,6 +73,22 @@ export function contextReference(value: unknown, field: string, allowDirectory =
   return directory ? `${candidate}/` : candidate;
 }
 
+/** A task may select only a short host-configured regression-overlay identifier. */
+export function regressionOverlayReference(value: unknown, field: string): string {
+  const reference = text(value, field, 100);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(reference)) throw new DevkitError("INVALID_REGRESSION_OVERLAY_REFERENCE", field);
+  return reference;
+}
+
+/** Overlay targets are portable, individual repository-relative files. */
+export function regressionOverlayTarget(value: unknown, field: string): string {
+  const target = text(value, field, 512);
+  if (target.startsWith("/") || target.includes("\\") || target.includes(":") || /[\u0000-\u001f\u007f]/.test(target) || target.endsWith("/") || target.split("/").some(part => !part || part === "." || part === "..")) {
+    throw new DevkitError("INVALID_REGRESSION_OVERLAY_TARGET", field);
+  }
+  return target;
+}
+
 function contextReferences(value: unknown): string[] {
   if (!Array.isArray(value) || value.length > 8) throw new DevkitError("INVALID_CONTEXT_REFERENCES");
   const references = value.map((item, index) => contextReference(item, `contextRefs[${index}]`));
@@ -64,8 +96,15 @@ function contextReferences(value: unknown): string[] {
   return references.sort();
 }
 
+function regressionOverlayReferences(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 8) throw new DevkitError("INVALID_REGRESSION_OVERLAY_REFERENCES");
+  const references = value.map((item, index) => regressionOverlayReference(item, `regressionOverlayRefs[${index}]`));
+  if (new Set(references).size !== references.length) throw new DevkitError("DUPLICATE_REGRESSION_OVERLAY_REFERENCE");
+  return references.sort();
+}
+
 export function validateTaskInput(value: unknown): TaskInput {
-  const r = object(value, ["kind", "title", "description", "repositoryRef", "baseRef", "reproduction", "acceptanceCriteria", "verificationProfile", "contextRefs", "idempotencyKey"]);
+  const r = object(value, ["kind", "title", "description", "repositoryRef", "baseRef", "reproduction", "acceptanceCriteria", "verificationProfile", "contextRefs", "regressionOverlayRefs", "idempotencyKey"]);
   if (r.kind !== "bugfix") throw new DevkitError("UNSUPPORTED_TASK_KIND");
   const reproduction = object(r.reproduction, ["steps", "expected", "actual"]);
   if (!Array.isArray(r.acceptanceCriteria) || !r.acceptanceCriteria.length || r.acceptanceCriteria.length > 100) throw new DevkitError("MISSING_ACCEPTANCE_CRITERIA");
@@ -81,6 +120,7 @@ export function validateTaskInput(value: unknown): TaskInput {
     acceptanceCriteria: criteria,
     ...(r.baseRef === undefined ? {} : { baseRef: text(r.baseRef, "baseRef", 200) }),
     ...(r.contextRefs === undefined ? {} : { contextRefs: contextReferences(r.contextRefs) }),
+    ...(r.regressionOverlayRefs === undefined ? {} : { regressionOverlayRefs: regressionOverlayReferences(r.regressionOverlayRefs) }),
     ...(r.idempotencyKey === undefined ? {} : { idempotencyKey: text(r.idempotencyKey, "idempotencyKey", 200) }),
   };
 }

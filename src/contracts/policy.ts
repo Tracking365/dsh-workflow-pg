@@ -1,5 +1,6 @@
 import path from "node:path";
-import { contextReference, DevkitError, object, strings, text } from "./task.js";
+import { contextReference, DevkitError, object, regressionOverlayReference, regressionOverlayTarget, strings, text } from "./task.js";
+import { redact } from "../domain/security.js";
 import type { HostPolicy, RepositoryPolicy } from "../plugins/tasks.js";
 import type { CommandSpec } from "../adapters/process.js";
 
@@ -95,7 +96,7 @@ export function validateHostPolicy(value: unknown): HostPolicy {
   const repositories: Record<string, RepositoryPolicy> = Object.create(null) as Record<string, RepositoryPolicy>;
   for (const [alias, value] of Object.entries(map(p.repositories))) {
     text(alias, "repository alias", 100);
-    const repo = object(value, ["path", "allowedPaths", "protectedPaths", "contextPaths"]), location = text(repo.path, "repository.path");
+    const repo = object(value, ["path", "allowedPaths", "protectedPaths", "contextPaths", "regressionOverlays"]), location = text(repo.path, "repository.path");
     if (!path.isAbsolute(location)) throw new DevkitError("INVALID_REPOSITORY_PATH");
     let contextPaths: string[] | undefined;
     if (repo.contextPaths !== undefined) {
@@ -103,11 +104,31 @@ export function validateHostPolicy(value: unknown): HostPolicy {
       contextPaths = repo.contextPaths.map((entry, index) => contextReference(entry, `contextPaths[${index}]`, true)).sort();
       if (new Set(contextPaths).size !== contextPaths.length) throw new DevkitError("DUPLICATE_CONTEXT_POLICY_PATH");
     }
+    let regressionOverlays: RepositoryPolicy["regressionOverlays"];
+    if (repo.regressionOverlays !== undefined) {
+      const entries = Object.entries(map(repo.regressionOverlays));
+      if (!entries.length || entries.length > 20) throw new DevkitError("INVALID_REGRESSION_OVERLAY_POLICY");
+      const targets = new Set<string>();
+      regressionOverlays = Object.create(null) as NonNullable<RepositoryPolicy["regressionOverlays"]>;
+      for (const [reference, raw] of entries) {
+        const ref = regressionOverlayReference(reference, "regressionOverlay ref");
+        const overlay = object(raw, ["source", "target", "verificationProfile", "baselineFailureMarker"]);
+        const source = text(overlay.source, `regressionOverlays.${ref}.source`, 4096);
+        if (!path.isAbsolute(source)) throw new DevkitError("INVALID_REGRESSION_OVERLAY_POLICY", ref);
+        const target = regressionOverlayTarget(overlay.target, `regressionOverlays.${ref}.target`);
+        const verificationProfile = text(overlay.verificationProfile, `regressionOverlays.${ref}.verificationProfile`, 100);
+        const baselineFailureMarker = text(overlay.baselineFailureMarker, `regressionOverlays.${ref}.baselineFailureMarker`, 512);
+        if (redact(baselineFailureMarker) !== baselineFailureMarker || targets.has(target)) throw new DevkitError(targets.has(target) ? "DUPLICATE_REGRESSION_OVERLAY_TARGET" : "INVALID_REGRESSION_OVERLAY_POLICY", ref);
+        targets.add(target);
+        regressionOverlays[ref] = { source, target, verificationProfile, baselineFailureMarker };
+      }
+    }
     repositories[alias] = {
       path: location,
       allowedPaths: strings(repo.allowedPaths, "allowedPaths"),
       protectedPaths: strings(repo.protectedPaths, "protectedPaths"),
       ...(contextPaths === undefined ? {} : { contextPaths }),
+      ...(regressionOverlays === undefined ? {} : { regressionOverlays }),
     };
   }
   const verificationProfiles: Record<string, CommandSpec[]> = Object.create(null) as Record<string, CommandSpec[]>;
@@ -118,6 +139,11 @@ export function validateHostPolicy(value: unknown): HostPolicy {
       if (!Number.isSafeInteger(c.timeoutMs) || Number(c.timeoutMs) <= 0 || Number(c.timeoutMs) > 3600000) throw new DevkitError("INVALID_COMMAND_TIMEOUT");
       return { id: text(c.id, "checkId"), command: text(c.command, "command"), args: strings(c.args, "args", true), criteria: strings(c.criteria, "criteria"), timeoutMs: Number(c.timeoutMs) };
     });
+  }
+  for (const repository of Object.values(repositories)) {
+    for (const overlay of Object.values(repository.regressionOverlays ?? {})) {
+      if (!Object.hasOwn(verificationProfiles, overlay.verificationProfile)) throw new DevkitError("REGRESSION_OVERLAY_PROFILE_UNKNOWN", overlay.verificationProfile);
+    }
   }
   if (!Number.isInteger(p.maxRetries) || Number(p.maxRetries) < 0 || Number(p.maxRetries) > 2 || !Number.isSafeInteger(p.maxDurationMs) || Number(p.maxDurationMs) <= 0 || Number(p.maxDurationMs) > 3600000) throw new DevkitError("INVALID_BUDGET");
   return {
