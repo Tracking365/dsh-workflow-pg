@@ -82,6 +82,15 @@ test("missing reviewer and same-family reviewer fail closed", async () => {
     const runtime = new Devkit(f.policy, a); try { const r = await runtime.run(runtime.create(input).taskId); assert.equal(r.reason, same ? "INDEPENDENT_REVIEW_REQUIRED" : "EXECUTOR_OR_REVIEWER_MISSING"); } finally { await runtime.close(); }
   }
 });
+test("a stopped executor failure is recorded and releases the writer lease", async () => {
+  const f = fixture(), runtime = new Devkit(f.policy, adapters({ execute: async () => ({ stopped: true, runId: "codex-run", failure: "CODEX_SUBAGENT_ERROR" }) }));
+  try {
+    const task = runtime.create(input), result = await runtime.run(task.taskId);
+    assert.equal(result.status, "blocked"); assert.equal(result.reason, "CODEX_SUBAGENT_ERROR"); assert.equal(runtime.store.hasLease(task.taskId), false);
+    const event = runtime.store.history(task.taskId).find((item) => item.type === "executor_settled");
+    assert.deepEqual(event?.payload, { stopped: true, runId: "codex-run", failure: "CODEX_SUBAGENT_ERROR" });
+  } finally { await runtime.close(); }
+});
 test("frozen test modification and out-of-scope changes cannot pass", async () => {
   for (const file of ["test/page.test.mjs", "unauthorized.txt"]) { const f = await runCase(() => adapters({ execute: async r => { writeFileSync(path.join(r.workspace, file), "tampered"); return { stopped: true, runId: "fixture" }; } }));
     try { assert.equal(f.result.readyForAcceptance, false); assert.equal(f.result.reason, file.startsWith("test/") ? "FROZEN_TESTS_CHANGED" : "OUT_OF_SCOPE_CHANGE"); } finally { await f.runtime.close(); }

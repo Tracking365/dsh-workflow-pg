@@ -1,8 +1,9 @@
-// Thin DSH/Cordis boundary. API source and unverified runtime status: docs/DSH_COMPATIBILITY.md.
+// Thin DSH/Cordis boundary. See docs/DSH_COMPATIBILITY.md for the verified
+// ToolRuntime and launcher fixtures, plus the remaining agent-session gates.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Devkit, DevkitError, object, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { Devkit, DevkitError, createDshCodexExecutor, object, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -18,8 +19,39 @@ const taskSchema = record({
 const idSchema = record({ taskId: string });
 const parseId = args => text(object(args, ["taskId"]).taskId, "taskId", 100);
 
+function codexProviderStatus(ctx) {
+  // `subagents` is optional: a normal property read requires the plugin to
+  // declare it in `inject`, whereas `get()` safely probes an optional service.
+  const subagents = ctx.get("subagents");
+  if (!subagents || typeof subagents.getProvider !== "function") {
+    return { state: "unconfigured", reason: "DSH_SUBAGENT_SERVICE_MISSING" };
+  }
+  const provider = subagents.getProvider("codex");
+  if (!provider) return { state: "unconfigured", reason: "CODEX_PROVIDER_MISSING" };
+  const capabilities = provider.capabilities ?? {};
+  return {
+    state: "supported",
+    provider: "codex",
+    liveValidated: false,
+    inheritsParentContext: provider.inheritsParentContext === true,
+    capabilities: {
+      agentOptions: capabilities.agentOptions === true,
+      outputSchema: capabilities.outputSchema === true,
+      depthLimit: capabilities.depthLimit === true,
+      toolFilter: capabilities.toolFilter === true,
+      persona: capabilities.persona === true,
+    },
+  };
+}
+
+function codexExecutor(ctx, exec) {
+  const subagents = ctx.get("subagents");
+  if (!exec.agent || !subagents || typeof subagents.getProvider !== "function" || subagents.getProvider("codex") === undefined) return undefined;
+  return createDshCodexExecutor({ subagents, parent: exec.agent });
+}
+
 /** Pure definition factory permits contract tests without pretending to run a DSH Context. */
-export function toolDefinitions(runtime) {
+export function toolDefinitions(runtime, services = {}) {
   const define = (name, description, parameters, handler) => ({
     name, description, parameters,
     output: {
@@ -28,14 +60,14 @@ export function toolDefinitions(runtime) {
     },
     async execute(args, exec) {
       exec.signal.throwIfAborted();
-      const value = await handler(args, exec.signal);
+      const value = await handler(args, exec);
       return JSON.parse(redact(JSON.stringify(value)));
     },
   });
   return [
-    define("devkit_doctor", "Inspect actual capabilities; does not call a model.", record({}), args => { object(args, []); return runtime.doctor(); }),
+    define("devkit_doctor", "Inspect actual capabilities; does not call a model.", record({}), args => { object(args, []); return services.doctor ? services.doctor() : runtime.doctor(); }),
     define("dev_task_create", "Create a task in a host-authorized repository; does not execute code.", taskSchema, args => runtime.create(args)),
-    define("dev_task_run", "Run an authorized task. Live writes are currently blocked pending sandbox integration.", idSchema, (args, signal) => runtime.run(parseId(args), signal)),
+    define("dev_task_run", "Run an authorized task. Live writes are currently blocked pending sandbox integration.", idSchema, (args, exec) => runtime.run(parseId(args), exec.signal, services.executor ? services.executor(exec) : undefined)),
     define("dev_task_status", "Read the durable task state and readiness, not a model summary.", idSchema, args => runtime.status(parseId(args))),
     define("dev_task_cancel", "Request cancellation and wait for the owned operation to settle.", idSchema, args => runtime.cancel(parseId(args))),
     define("dev_task_resume", "Check recovery eligibility; unresolved recovery requires an operator.", idSchema, args => runtime.resume(parseId(args))),
@@ -58,5 +90,12 @@ export function apply(ctx, config = {}) {
   if (policy.executionMode !== "disabled") throw new DevkitError("NATIVE_FIXTURE_MODE_NOT_ALLOWED");
   const runtime = new Devkit(policy);
   ctx.on("dispose", () => runtime.close());
-  for (const definition of toolDefinitions(runtime)) ctx.tools.register(definition);
+  for (const definition of toolDefinitions(runtime, {
+    doctor: () => ({
+      ...runtime.doctor(),
+      nativeRuntime: { state: "supported", registry: "dsh-tools" },
+      codexSubagent: codexProviderStatus(ctx),
+    }),
+    executor: exec => codexExecutor(ctx, exec),
+  })) ctx.tools.register(definition);
 }

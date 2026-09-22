@@ -27,6 +27,13 @@ uses explicit HTTPS configuration and a separate credential callback, rejects re
 checks response shape/model identity, and rejects known credential patterns in context.
 Regex redaction is best-effort, not a complete secret detector. Do not pass real secrets.
 
+The dormant DSH Codex bridge delegates only through the official `subagents` registry; it
+does not invoke a Codex CLI or HTTP endpoint itself. Before it can call a provider, it requires
+the parent session's canonical `cwd` to equal the isolated candidate worktree, because the
+official provider owns its child cwd and has no public per-run cwd override. A mismatch returns
+`CODEX_WORKSPACE_BINDING_UNAVAILABLE` without starting a child. After a published child, the
+bridge waits for `dispose()` and retains the writer lease if teardown cannot be proved.
+
 `git()` disables hooks for generated fixture repositories; it is not a production Git
 adapter and does not implement organization signing/hooks policies. No host commit/push/
 merge/deployment feature is exposed. Patches remain local and fixture evidence stays labeled.
@@ -37,7 +44,9 @@ capabilities, binding to operator identity and expiration remain unimplemented.
 
 ## Explicit gaps / do not relax these to make tests pass
 
-* No Codex native sandbox adapter, network egress enforcement, credential broker or readonly
+* The official Codex provider can be registered and the DevKit bridge is fail-closed on an
+  unbound workspace, but no real Codex session has been composed at the candidate worktree.
+  There is no verified OS sandbox, network egress enforcement, credential broker or readonly
   tool-using reviewer; live runs remain blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.

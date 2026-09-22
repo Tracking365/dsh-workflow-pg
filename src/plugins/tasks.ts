@@ -15,8 +15,13 @@ export interface HostPolicy {
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }
-export interface ExecutionRequest { task: TaskRecord; workspace: string; snapshot: Snapshot; feedback: string; signal: AbortSignal }
-export interface CodeExecutor { readonly family: string; readonly kind: "fixture" | "live"; execute(request: ExecutionRequest): Promise<{ stopped: boolean; runId: string }> }
+export interface ExecutionRequest {
+  task: TaskRecord; workspace: string; snapshot: Snapshot; feedback: string; signal: AbortSignal;
+  allowedPaths: readonly string[]; protectedPaths: readonly string[];
+}
+/** An executor always reports whether its owned writer has reached quiescence. */
+export interface ExecutionResult { readonly stopped: boolean; readonly runId?: string; readonly failure?: string }
+export interface CodeExecutor { readonly family: string; readonly kind: "fixture" | "live"; execute(request: ExecutionRequest): Promise<ExecutionResult> }
 export interface RuntimeAdapters { executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean> }
 interface ActiveRun { controller: AbortController; done: Promise<TaskRecord> }
 
@@ -57,7 +62,7 @@ export class Devkit {
       executor: this.adapters.executor ? { family: this.adapters.executor.family, kind: this.adapters.executor.kind } : { state: "unconfigured" },
       reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" } };
   }
-  async run(id: string, signal: AbortSignal = new AbortController().signal): Promise<TaskRecord> {
+  async run(id: string, signal: AbortSignal = new AbortController().signal, executorOverride?: CodeExecutor): Promise<TaskRecord> {
     if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
     if (signal.aborted) throw new DevkitError("CANCELLED");
     if (this.active.has(id)) throw new DevkitError("TASK_ALREADY_RUNNING");
@@ -67,11 +72,11 @@ export class Devkit {
     this.store.acquire(id, realpathSync(repo.path), runId);
     const controller = new AbortController();
     const combined = AbortSignal.any([controller.signal, signal, AbortSignal.timeout(this.policy.maxDurationMs)]);
-    const done = Promise.resolve().then(() => this.execute(id, repo, combined));
+    const done = Promise.resolve().then(() => this.execute(id, repo, combined, executorOverride));
     this.active.set(id, { controller, done });
     try { return await done; } finally { this.active.delete(id); }
   }
-  private async execute(id: string, repo: RepositoryPolicy, signal: AbortSignal): Promise<TaskRecord> {
+  private async execute(id: string, repo: RepositoryPolicy, signal: AbortSignal, executorOverride?: CodeExecutor): Promise<TaskRecord> {
     let stopped = true;
     const set = (patch: Parameters<TaskStore["update"]>[2], event: string, payload: unknown = {}) => this.store.update(id, this.store.get(id).version, patch, event, payload);
     const stage = (value: TaskRecord["stage"]) => { signal.throwIfAborted(); set({ stage: value }, "stage", { stage: value }); };
@@ -81,7 +86,7 @@ export class Devkit {
       // Fixture mode is an explicitly configured test harness, not a sandbox or a live
       // execution path. Keep its platform result visible in doctor/report instead of
       // making portable deterministic tests hang before their fixture can settle.
-      const executor = this.adapters.executor, reviewer = this.adapters.reviewer;
+      const executor = executorOverride ?? this.adapters.executor, reviewer = this.adapters.reviewer;
       if (!executor || !reviewer) throw new DevkitError("EXECUTOR_OR_REVIEWER_MISSING");
       if (executor.kind !== "fixture" || reviewer.kind !== "fixture") throw new DevkitError("LIVE_ADAPTER_REQUIRES_SANDBOX");
       if (executor.family === reviewer.family) throw new DevkitError("INDEPENDENT_REVIEW_REQUIRED");
@@ -113,12 +118,20 @@ export class Devkit {
       let feedback = "";
       for (;;) {
         stage("implement");
-        const request: ExecutionRequest = { task: this.store.get(id), workspace: work, snapshot: capture(), feedback, signal };
+        const request: ExecutionRequest = {
+          task: this.store.get(id), workspace: work, snapshot: capture(), feedback, signal,
+          allowedPaths: repo.allowedPaths, protectedPaths: repo.protectedPaths,
+        };
         set({}, "executor_dispatch", { operationId: randomUUID(), attempt: this.store.get(id).retryCount + 1, snapshotId: request.snapshot.id });
         stopped = false;
         const executed = await executor.execute(request); stopped = executed.stopped;
+        set({}, "executor_settled", {
+          stopped,
+          ...(executed.runId === undefined ? {} : { runId: executed.runId }),
+          ...(executed.failure === undefined ? {} : { failure: executed.failure }),
+        });
         if (!stopped) throw new DevkitError("STOP_UNCONFIRMED");
-        set({}, "executor_settled", { runId: executed.runId, stopped });
+        if (executed.failure !== undefined) throw new DevkitError(executed.failure);
         stage("snapshot");
         const candidate = capture(); ensureFrozen(candidate);
         set({ snapshotId: candidate.id }, "snapshot", candidate);

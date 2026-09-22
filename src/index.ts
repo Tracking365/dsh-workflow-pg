@@ -5,5 +5,6 @@ export * from "./adapters/store.js";
 export * from "./adapters/process.js";
 export * from "./adapters/workspace.js";
 export * from "./adapters/review.js";
+export * from "./adapters/executor-dsh-codex.js";
 export * from "./plugins/tasks.js";
 export * from "./contracts/policy.js";
