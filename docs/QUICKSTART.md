@@ -90,7 +90,8 @@ host-owned file, not a task payload, and must not be writable by a code executio
     "demo": {
       "path": "/absolute/path/to/a/test-repo",
       "allowedPaths": ["src/"],
-      "protectedPaths": ["test/"]
+      "protectedPaths": ["test/"],
+      "contextPaths": ["docs/", "CONTRIBUTING.md"]
     }
   },
   "verificationProfiles": {
@@ -113,6 +114,24 @@ handoff example config has been completely implemented; unknown keys are rejecte
 The optional reviewer block stores only a fixed HTTPS endpoint, model and an environment-variable
 reference; never put a token in the JSON file. The current disabled path does not read this
 variable or make a request.
+
+### Optional frozen task context
+
+`contextPaths` is an optional host-owned allowlist. An entry ending in `/` is an existing
+repository directory; any other entry is one existing repository file. A task may then supply
+`contextRefs` containing up to eight individual relative files within that allowlist. It cannot
+name a directory, escape the repository, use a symlink, or broaden the host policy.
+
+At task creation DevKit reads each selected blob from the resolved Git base, not the dirty working
+tree. It accepts UTF-8 files only, limits each file to 4 KiB and all selected text to 6 KiB, and
+rejects NUL bytes and text matching its known-secret redaction patterns. The private data root
+stores the raw text in `contexts/<manifest-hash>.json` (directory 0700, artifact 0600); the task
+record and events retain only the base, file paths, sizes and hashes. Before an executor receives
+the context, its fresh candidate clone must hash-match that frozen manifest.
+
+This is a small, explicit reference bundle, not a semantic code search or a production credential
+boundary. The native disabled policy still blocks execution; do not treat this configuration as an
+authorization to run a model against a business repository.
 
 ### Optional local approval presentation
 

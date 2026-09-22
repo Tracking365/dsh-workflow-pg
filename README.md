@@ -16,9 +16,15 @@ provider 的自动拒绝流。它强制 ephemeral 候选线程、受限读写、
 启动该页面并在卸载时关闭它；它仍未接入 direct client 的执行路径。它们没有读取当前登录、
 没有模型网络或凭据 broker，因此不能把它们当作生产可用开关。
 
+同日核心任务增加了受限的冻结上下文：宿主可在仓库策略中用 `contextPaths` 声明精确文件或
+目录白名单，任务仅可选择最多 8 个其中的相对文件。正文从任务创建时已固定的 Git 基准读取，
+只接受 UTF-8 小文本且拒绝疑似密钥；候选副本在执行器前必须逐文件哈希匹配。任务、状态与事件
+只保留清单哈希，原文只在私有数据根的 0600 工件中保存。这不是通用仓库检索，也没有解除 native
+live 的阻断。
+
 ## 已实现
 
-TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任务与事件、持久仓库运行锁、任务创建时冻结基准提交、独立 Git 副本、包含未跟踪文件/二进制/模式的快照、冻结测试与范围检查、真实 Node TAP 验证、独立审核协议、待办去重、共享两次返修预算、补丁产物和宿主人工验收。重启时遗留的运行会变为 `interrupted` 并保留 lease；只有宿主侧、绑定当前快照事实且证明旧写入者已停止的恢复授权，才能保留旧副本并从冻结基准创建全新候选副本。
+TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任务与事件、持久仓库运行锁、任务创建时冻结基准提交、宿主白名单内的冻结上下文、独立 Git 副本、包含未跟踪文件/二进制/模式的快照、冻结测试与范围检查、真实 Node TAP 验证、独立审核协议、待办去重、共享两次返修预算、补丁产物和宿主人工验收。重启时遗留的运行会变为 `interrupted` 并保留 lease；只有宿主侧、绑定当前快照事实且证明旧写入者已停止的恢复授权，才能保留旧副本并从冻结基准创建全新候选副本。
 
 提供 DSH bundle patch、七个工具定义、生命周期关闭入口、官方 `@deepseek-ai/dsh-subagent-codex` 的薄桥接，以及独立的 DeepSeek HTTP 只读审核适配器。Codex 桥接只经 DSH 的 `subagents` 服务委托，不会自行调用 CLI/API；候选会话组成层会从当前工具 Agent 建立谱系、以候选副本的 canonical `cwd` 创建短生命周期父会话，再由底层桥接再次校验目录相等。不能证明子代理或该父会话已退出时会保留写锁。另有 `pagination-v1` 确定性 fixture：它只接受带标记的临时分页仓库、固定 `src/` 写入范围、冻结的 `test/` 与固定 Node TAP 命令，执行器和审核器均为宿主代码，不调用模型。离线 fixture 与独立审核适配器不会使用真实账号或自动接入 live 工作流；唯一的当前登录态调用是上述一次受控临时 fixture。
 
@@ -71,4 +77,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批页面、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批页面、冻结上下文、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。

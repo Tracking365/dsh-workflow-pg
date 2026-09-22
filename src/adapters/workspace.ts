@@ -5,8 +5,11 @@ import { byteHash, hash, DevkitError } from "../contracts/task.js";
 import { minimalEnvironment, resolveRealWithin, redact } from "../domain/security.js";
 export interface FileEntry { path: string; hash: string; size: number; mode: number }
 export interface Snapshot { id: string; baseCommit: string; files: FileEntry[]; policyHash: string; planHash: string }
+export function gitBytes(cwd: string, args: readonly string[]): Buffer {
+  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=always", ...args], { cwd, env: minimalEnvironment(cwd), encoding: "buffer", timeout: 15000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+}
 export function git(cwd: string, args: readonly string[]): string {
-  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=always", ...args], { cwd, env: minimalEnvironment(cwd), encoding: "utf8", timeout: 15000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+  return gitBytes(cwd, args).toString("utf8");
 }
 export function resolveBase(repository: string, ref = "HEAD"): string {
   if (ref.startsWith("-") || ref.includes("\0") || ref.includes("\n")) throw new DevkitError("INVALID_BASE_REF");

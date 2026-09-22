@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, lstatSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { DevkitError, hash, type TaskInput, type TaskRecord } from "../contracts/task.js";
+import { DevkitError, hash, type FrozenContext, type TaskInput, type TaskRecord } from "../contracts/task.js";
 import { assertTransition } from "../domain/state-machine.js";
 
 type Patch = Partial<Pick<TaskRecord, "status" | "stage" | "retryCount" | "readyForAcceptance" | "reason" | "workspace" | "baseCommit" | "snapshotId" | "runId">>;
@@ -63,7 +63,7 @@ export class TaskStore {
     try { const value = run(); this.db.exec("COMMIT"); return value; }
     catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
-  create(input: TaskInput, policyHash: string, baseCommit?: string): TaskRecord {
+  create(input: TaskInput, policyHash: string, baseCommit?: string, frozenContext?: FrozenContext): TaskRecord {
     const inputHash = hash(input);
     return this.transaction(() => {
       if (input.idempotencyKey) {
@@ -75,9 +75,20 @@ export class TaskStore {
         }
       }
       const now = new Date().toISOString();
-      const record: TaskRecord = { schemaVersion: 1, taskId: randomUUID(), inputHash, input, policyHash, ...(baseCommit ? { baseCommit } : {}), status: "queued", stage: "preflight", retryCount: 0, readyForAcceptance: false, version: 0, createdAt: now, updatedAt: now };
+      const record: TaskRecord = { schemaVersion: 1, taskId: randomUUID(), inputHash, input, policyHash, ...(baseCommit ? { baseCommit } : {}), ...(frozenContext === undefined ? {} : { frozenContext }), status: "queued", stage: "preflight", retryCount: 0, readyForAcceptance: false, version: 0, createdAt: now, updatedAt: now };
       this.db.prepare("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)").run(record.taskId, input.idempotencyKey ?? null, inputHash, 0, JSON.stringify(record));
-      this.event(record.taskId, "created", { inputHash, policyHash });
+      this.event(record.taskId, "created", {
+        inputHash,
+        policyHash,
+        ...(baseCommit === undefined ? {} : { baseCommit }),
+        ...(frozenContext === undefined ? {} : {
+          frozenContext: {
+            manifestHash: frozenContext.manifestHash,
+            baseCommit: frozenContext.baseCommit,
+            files: frozenContext.files,
+          },
+        }),
+      });
       return record;
     });
   }

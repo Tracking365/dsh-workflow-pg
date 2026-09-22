@@ -44,6 +44,16 @@ reclaim. A failed stop proof retains the lease and yields `interrupted`, not `ca
 On store reopen, prior `running`/`cancelling` tasks are atomically marked `interrupted` while
 their lease remains held.
 
+Optional frozen task context is also host-owned. `RepositoryPolicy.contextPaths` can name only
+existing exact files or existing directories; a task can select at most eight individual relative
+files from that allowlist. DevKit reads immutable Git blobs at the task's pinned base, rather than
+the working tree, rejects non-blob paths, symlinks, non-UTF-8/NUL text, known-secret matches, files
+over 4 KiB, and a total over 6 KiB. The private `dataRoot/contexts` directory is enforced 0700 and
+each artifact 0600; task records and durable events contain only the manifest's paths, sizes and
+hashes, never the text. Before dispatch, the fresh candidate must hash-match every frozen file.
+The bounded Codex renderer redacts again. This is not a complete secret detector, semantic retriever,
+or an OS security boundary.
+
 Shell interpolation is not used. Child processes get an environment allowlist, not model
 keys or NODE_OPTIONS. Output and model context are bounded. The HTTP reviewer has no tools,
 uses explicit HTTPS configuration and a separate credential callback, rejects redirects,
@@ -179,8 +189,8 @@ mechanism; authenticated identity, expiry and approval presentation remain unimp
   alone is not sufficient for arbitrary business bugs outside this fixture.
 * A host `confirmFinding` callback is the trusted evidence seam. The supplied tests use an
   explicit stub; independent production evidence adjudication remains to be built.
-* Review context currently includes task, patch and test evidence, not a complete bounded
-  project-context retriever. Large repositories are rejected, not silently truncated.
+* A small frozen task-context bundle is available, but it is explicit Git-base text only—not a
+  complete semantic project-context retriever, regression overlay, or large-repository search.
 * Process cancellation is exercised by the fixture on macOS. Windows behavior and all live
   execution behavior remain unverified; fixture process groups are not an OS sandbox.
 

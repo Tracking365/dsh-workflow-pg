@@ -1,15 +1,22 @@
 import path from "node:path";
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DevkitError, hash, object, text, validateTaskInput, type TaskRecord } from "../contracts/task.js";
 import { validateHostPolicy } from "../contracts/policy.js";
 import { evidenceGate, type CheckEvidence } from "../domain/state-machine.js";
 import { resolveRealWithin, redact } from "../domain/security.js";
 import { TaskStore, type TaskLease } from "../adapters/store.js";
+import { ContextStore, type LoadedContext } from "../adapters/context.js";
 import { runCommand, type CommandConfinement, type CommandSpec } from "../adapters/process.js";
 import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, exportPatch, writeArtifact, type Snapshot } from "../adapters/workspace.js";
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
-export interface RepositoryPolicy { path: string; allowedPaths: string[]; protectedPaths: string[] }
+export interface RepositoryPolicy {
+  path: string;
+  allowedPaths: string[];
+  protectedPaths: string[];
+  /** Optional host-owned read allowlist for immutable task context files. */
+  contextPaths?: string[];
+}
 /** Trusted host metadata only; the credential value remains outside JSON policy. */
 export interface ReviewerPolicy { endpoint: string; model: string; credentialEnv: string; timeoutMs?: number }
 /**
@@ -40,6 +47,8 @@ export interface HostPolicy {
 export interface ExecutionRequest {
   task: TaskRecord; workspace: string; snapshot: Snapshot; feedback: string; signal: AbortSignal;
   allowedPaths: readonly string[]; protectedPaths: readonly string[];
+  /** Private, base-pinned text selected from host-authorized context paths. */
+  context?: import("../adapters/context.js").LoadedContext;
 }
 /** An executor always reports whether its owned writer has reached quiescence. */
 export interface ExecutionResult { readonly stopped: boolean; readonly runId?: string; readonly failure?: string }
@@ -94,6 +103,7 @@ export class Devkit {
   readonly store: TaskStore;
   private readonly policy: HostPolicy;
   private readonly policyHash: string;
+  private readonly contexts: ContextStore;
   private readonly active = new Map<string, ActiveRun>();
   private closing = false;
   constructor(policy: HostPolicy, private readonly adapters: RuntimeAdapters = {}) {
@@ -105,7 +115,18 @@ export class Devkit {
       const base = realpathSync(repo.path), data = realpathSync(policy.dataRoot);
       if (data === base || data.startsWith(`${base}${path.sep}`) || base.startsWith(`${data}${path.sep}`)) throw new DevkitError("CONTROL_PLANE_OVERLAPS_REPOSITORY");
       for (const candidate of [...repo.allowedPaths, ...repo.protectedPaths]) resolveRealWithin(base, candidate);
+      for (const reference of repo.contextPaths ?? []) {
+        try {
+          const candidate = resolveRealWithin(base, reference);
+          const stat = lstatSync(candidate);
+          if (reference.endsWith("/") ? !stat.isDirectory() : !stat.isFile()) throw new DevkitError("INVALID_CONTEXT_POLICY", reference);
+        } catch (error) {
+          if (error instanceof DevkitError) throw error;
+          throw new DevkitError("INVALID_CONTEXT_POLICY", reference);
+        }
+      }
     }
+    this.contexts = new ContextStore(resolveRealWithin(realpathSync(policy.dataRoot), "contexts"));
     this.store = new TaskStore(path.join(policy.dataRoot, "tasks.sqlite"));
   }
   create(raw: unknown): TaskRecord {
@@ -113,8 +134,12 @@ export class Devkit {
     const input = validateTaskInput(raw);
     if (!Object.hasOwn(this.policy.repositories, input.repositoryRef)) throw new DevkitError("REPOSITORY_NOT_AUTHORIZED");
     if (!Object.hasOwn(this.policy.verificationProfiles, input.verificationProfile)) throw new DevkitError("UNKNOWN_VERIFICATION_PROFILE");
-    if (input.contextRefs?.length) throw new DevkitError("CONTEXT_REFERENCES_NOT_YET_SUPPORTED");
-    return this.store.create(input, this.policyHash, resolveBase(this.policy.repositories[input.repositoryRef]!.path, input.baseRef));
+    const repository = this.policy.repositories[input.repositoryRef]!;
+    const baseCommit = resolveBase(repository.path, input.baseRef);
+    const frozenContext = input.contextRefs?.length
+      ? this.contexts.freeze(repository.path, baseCommit, input.contextRefs, repository.contextPaths ?? [])
+      : undefined;
+    return this.store.create(input, this.policyHash, baseCommit, frozenContext);
   }
   status(id: string): TaskRecord { return this.store.get(id); }
   doctor(): object {
@@ -170,6 +195,22 @@ export class Devkit {
       }
       const capture = () => snapshot(work, base, this.policyHash, planHash);
       stage("context");
+      let context: LoadedContext | undefined;
+      const requestedContext = task.input.contextRefs ?? [];
+      if (requestedContext.length) {
+        if (!task.frozenContext || task.frozenContext.baseCommit !== base || requestedContext.length !== task.frozenContext.files.length || requestedContext.some((reference, index) => reference !== task.frozenContext?.files[index]?.path)) {
+          throw new DevkitError("CONTEXT_MANIFEST_MISMATCH");
+        }
+        context = this.contexts.load(task.frozenContext);
+        this.contexts.assertWorkspace(context, work);
+        set({}, "context_loaded", {
+          manifestHash: context.manifest.manifestHash,
+          baseCommit: context.manifest.baseCommit,
+          files: context.manifest.files,
+        });
+      } else if (task.frozenContext !== undefined) {
+        throw new DevkitError("CONTEXT_MANIFEST_UNEXPECTED");
+      }
       const baseline = capture(), protectedHash = frozenHash(baseline, repo.protectedPaths);
       set({}, "baseline_snapshot", baseline);
       if (!repo.protectedPaths.length || !baseline.files.some((f) => repo.protectedPaths.some((p) => f.path === p || (p.endsWith("/") && f.path.startsWith(p))))) throw new DevkitError("FROZEN_TESTS_MISSING");
@@ -195,6 +236,7 @@ export class Devkit {
         const request: ExecutionRequest = {
           task: this.store.get(id), workspace: work, snapshot: capture(), feedback, signal,
           allowedPaths: repo.allowedPaths, protectedPaths: repo.protectedPaths,
+          ...(context === undefined ? {} : { context }),
         };
         set({}, "executor_dispatch", { operationId: randomUUID(), attempt: this.store.get(id).retryCount + 1, snapshotId: request.snapshot.id });
         stopped = false;

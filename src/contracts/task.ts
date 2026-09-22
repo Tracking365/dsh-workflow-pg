@@ -12,13 +12,21 @@ export interface TaskInput {
   readonly acceptanceCriteria: AcceptanceCriterion[]; readonly verificationProfile: string;
   readonly contextRefs?: string[]; readonly idempotencyKey?: string;
 }
+/** Metadata only; frozen context text is stored in a private host artifact. */
+export interface FrozenContextFile { readonly path: string; readonly hash: string; readonly size: number }
+export interface FrozenContext {
+  readonly schemaVersion: 1;
+  readonly baseCommit: string;
+  readonly manifestHash: string;
+  readonly files: readonly FrozenContextFile[];
+}
 export interface TaskRecord {
   readonly schemaVersion: 1; readonly taskId: string; readonly inputHash: string;
   readonly input: TaskInput; readonly status: TaskStatus; readonly stage: TaskStage;
   readonly retryCount: number; readonly readyForAcceptance: boolean; readonly reason?: string;
   readonly version: number; readonly createdAt: string; readonly updatedAt: string;
   readonly policyHash: string; readonly baseCommit?: string; readonly workspace?: string;
-  readonly snapshotId?: string; readonly runId?: string;
+  readonly snapshotId?: string; readonly runId?: string; readonly frozenContext?: FrozenContext;
 }
 export class DevkitError extends Error {
   constructor(readonly code: string, detail = "") { super(detail ? `${code}: ${detail}` : code); this.name = "DevkitError"; }
@@ -37,6 +45,25 @@ export function strings(value: unknown, field: string, allowEmpty = false): stri
   if (!Array.isArray(value) || (!allowEmpty && !value.length) || value.length > 100) throw new DevkitError("INVALID_FIELD", field);
   return value.map((item) => text(item, field));
 }
+
+/** A task may name only individual, portable repository-relative files. */
+export function contextReference(value: unknown, field: string, allowDirectory = false): string {
+  const reference = text(value, field, 512);
+  const directory = allowDirectory && reference.endsWith("/");
+  const candidate = directory ? reference.slice(0, -1) : reference;
+  if (!candidate || reference.startsWith("/") || reference.includes("\\") || reference.includes(":") || /[\u0000-\u001f\u007f]/.test(reference) || (!directory && reference.endsWith("/")) || candidate.split("/").some(part => !part || part === "." || part === "..")) {
+    throw new DevkitError("INVALID_CONTEXT_REFERENCE", field);
+  }
+  return directory ? `${candidate}/` : candidate;
+}
+
+function contextReferences(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 8) throw new DevkitError("INVALID_CONTEXT_REFERENCES");
+  const references = value.map((item, index) => contextReference(item, `contextRefs[${index}]`));
+  if (new Set(references).size !== references.length) throw new DevkitError("DUPLICATE_CONTEXT_REFERENCE");
+  return references.sort();
+}
+
 export function validateTaskInput(value: unknown): TaskInput {
   const r = object(value, ["kind", "title", "description", "repositoryRef", "baseRef", "reproduction", "acceptanceCriteria", "verificationProfile", "contextRefs", "idempotencyKey"]);
   if (r.kind !== "bugfix") throw new DevkitError("UNSUPPORTED_TASK_KIND");
@@ -53,7 +80,7 @@ export function validateTaskInput(value: unknown): TaskInput {
     reproduction: { steps: strings(reproduction.steps, "reproduction.steps"), expected: text(reproduction.expected, "reproduction.expected"), actual: text(reproduction.actual, "reproduction.actual") },
     acceptanceCriteria: criteria,
     ...(r.baseRef === undefined ? {} : { baseRef: text(r.baseRef, "baseRef", 200) }),
-    ...(r.contextRefs === undefined ? {} : { contextRefs: strings(r.contextRefs, "contextRefs", true) }),
+    ...(r.contextRefs === undefined ? {} : { contextRefs: contextReferences(r.contextRefs) }),
     ...(r.idempotencyKey === undefined ? {} : { idempotencyKey: text(r.idempotencyKey, "idempotencyKey", 200) }),
   };
 }

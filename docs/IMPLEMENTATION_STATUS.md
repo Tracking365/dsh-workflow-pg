@@ -29,6 +29,14 @@ enable live execution.
 All of these pieces are covered only with synthetic peers and secrets: no current login,
 endpoint, or model was accessed, and the native live path remains disabled.
 
+Frozen-context increment (2026-09-23): a host can authorize exact files/directories through
+`RepositoryPolicy.contextPaths`; task `contextRefs` then freeze up to eight UTF-8 Git-base blobs
+(4 KiB each, 6 KiB total) into a private 0700/0600 manifest artifact. Task records/events retain
+only descriptors and the candidate clone must hash-match them before the executor receives the
+bounded, re-redacted prompt context. Fixture tests cover source advancement after task creation,
+host-policy rejection, suspected secrets, native fixture rejection, and corrupt-artifact blocking.
+This is not semantic retrieval and does not change the disabled live gate.
+
 Do not mark v0.1/M0–M3 complete. The original handoff and acceptance requirements remain
 unchanged; this PR does not lower them to match the implementation.
 
@@ -47,6 +55,6 @@ Next work, in order:
 2. Wire the direct client to native execution only after that transport boundary exists; then
    verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
    authorized disposable fixtures only.
-3. Add bounded project context, regression overlay/adjudication, and authenticated recovery
-   control planes. Never reclaim a lease based on age alone.
+3. Add regression overlay/adjudication and authenticated recovery control planes; evolve frozen
+   context only with explicit bounds and evidence. Never reclaim a lease based on age alone.
 4. Finish the original acceptance matrix before UI/feature extensions.

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { DevkitError, object, strings, text } from "./task.js";
+import { contextReference, DevkitError, object, strings, text } from "./task.js";
 import type { HostPolicy, RepositoryPolicy } from "../plugins/tasks.js";
 import type { CommandSpec } from "../adapters/process.js";
 
@@ -61,9 +61,20 @@ export function validateHostPolicy(value: unknown): HostPolicy {
   const repositories: Record<string, RepositoryPolicy> = Object.create(null) as Record<string, RepositoryPolicy>;
   for (const [alias, value] of Object.entries(map(p.repositories))) {
     text(alias, "repository alias", 100);
-    const repo = object(value, ["path", "allowedPaths", "protectedPaths"]), location = text(repo.path, "repository.path");
+    const repo = object(value, ["path", "allowedPaths", "protectedPaths", "contextPaths"]), location = text(repo.path, "repository.path");
     if (!path.isAbsolute(location)) throw new DevkitError("INVALID_REPOSITORY_PATH");
-    repositories[alias] = { path: location, allowedPaths: strings(repo.allowedPaths, "allowedPaths"), protectedPaths: strings(repo.protectedPaths, "protectedPaths") };
+    let contextPaths: string[] | undefined;
+    if (repo.contextPaths !== undefined) {
+      if (!Array.isArray(repo.contextPaths) || !repo.contextPaths.length || repo.contextPaths.length > 20) throw new DevkitError("INVALID_CONTEXT_POLICY");
+      contextPaths = repo.contextPaths.map((entry, index) => contextReference(entry, `contextPaths[${index}]`, true)).sort();
+      if (new Set(contextPaths).size !== contextPaths.length) throw new DevkitError("DUPLICATE_CONTEXT_POLICY_PATH");
+    }
+    repositories[alias] = {
+      path: location,
+      allowedPaths: strings(repo.allowedPaths, "allowedPaths"),
+      protectedPaths: strings(repo.protectedPaths, "protectedPaths"),
+      ...(contextPaths === undefined ? {} : { contextPaths }),
+    };
   }
   const verificationProfiles: Record<string, CommandSpec[]> = Object.create(null) as Record<string, CommandSpec[]>;
   for (const [alias, value] of Object.entries(map(p.verificationProfiles))) {
