@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DeepSeekReviewer, Devkit, DevkitError, LocalApprovalControlPlane, LocalCodexApprovalBroker, LocalRecoveryApprovalBroker, LocalRecoveryControlPlane, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { DeepSeekReviewer, Devkit, DevkitError, LocalApprovalControlPlane, LocalCodexApprovalBroker, LocalFindingAdjudicationBroker, LocalFindingAdjudicationControlPlane, LocalRecoveryApprovalBroker, LocalRecoveryControlPlane, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -115,6 +115,32 @@ async function installLocalRecoveryControlPlane(policy, runtime, broker) {
     credential: () => process.env[configured.credentialEnv] ?? "",
     operatorId: configured.operatorId,
     recover: async taskId => await runtime.recover(taskId),
+    ...(configured.port === undefined ? {} : { port: configured.port }),
+  });
+  try {
+    const { url } = await plane.start();
+    return {
+      url,
+      async dispose() { await plane.stop(); },
+    };
+  } catch (error) {
+    try { await plane.stop(); } catch { /* preserve the host startup failure */ }
+    throw error;
+  }
+}
+
+/**
+ * High-risk finding adjudication is distinct from App Server item approval and
+ * retained-run recovery. It can only confirm a finding for the existing retry
+ * loop or defer it to human judgement; no task tool can clear the finding.
+ */
+async function installLocalFindingAdjudicationControlPlane(policy, broker) {
+  const configured = policy.findingAdjudicationControlPlane;
+  if (configured === undefined || broker === undefined) return undefined;
+  const plane = new LocalFindingAdjudicationControlPlane({
+    broker,
+    credential: () => process.env[configured.credentialEnv] ?? "",
+    operatorId: configured.operatorId,
     ...(configured.port === undefined ? {} : { port: configured.port }),
   });
   try {
@@ -359,26 +385,37 @@ export async function apply(ctx, config = {}) {
     credential: () => process.env[policy.reviewer.credentialEnv] ?? "",
   });
   const recoveryBroker = policy.recoveryControlPlane === undefined ? undefined : new LocalRecoveryApprovalBroker();
+  const findingAdjudicationBroker = policy.findingAdjudicationControlPlane === undefined ? undefined : new LocalFindingAdjudicationBroker();
   const runtime = new Devkit(policy, policy.executionMode === "fixture"
     ? createPaginationFixtureAdapters()
     : {
         ...(reviewer === undefined ? {} : { reviewer }),
         ...(recoveryBroker === undefined ? {} : { recoveryAuthority: recoveryBroker }),
+        ...(findingAdjudicationBroker === undefined ? {} : { findingAdjudicator: findingAdjudicationBroker }),
       });
   let approvalControlPlane;
   let recoveryControlPlane;
+  let findingAdjudicationControlPlane;
   let managed;
-  try {
-    recoveryControlPlane = await installLocalRecoveryControlPlane(policy, runtime, recoveryBroker);
-    approvalControlPlane = await installLocalApprovalControlPlane(policy);
-    managed = await installManagedCodexProvider(ctx, policy);
-  } catch (error) {
+  const disposeControlPlanes = async () => {
     try {
+      await findingAdjudicationControlPlane?.dispose();
+    } finally {
       try {
         await recoveryControlPlane?.dispose();
       } finally {
         await approvalControlPlane?.dispose();
       }
+    }
+  };
+  try {
+    findingAdjudicationControlPlane = await installLocalFindingAdjudicationControlPlane(policy, findingAdjudicationBroker);
+    recoveryControlPlane = await installLocalRecoveryControlPlane(policy, runtime, recoveryBroker);
+    approvalControlPlane = await installLocalApprovalControlPlane(policy);
+    managed = await installManagedCodexProvider(ctx, policy);
+  } catch (error) {
+    try {
+      await disposeControlPlanes();
     } finally {
       await runtime.close();
     }
@@ -389,11 +426,7 @@ export async function apply(ctx, config = {}) {
       // Decline any outstanding local decision before cancelling the runtime.
       // A future direct client can then leave its turn promptly rather than
       // waiting for an approval timeout during plugin unload.
-      try {
-        await recoveryControlPlane?.dispose();
-      } finally {
-        await approvalControlPlane?.dispose();
-      }
+      await disposeControlPlanes();
     } finally {
       try {
         await runtime.close();
@@ -428,6 +461,15 @@ export async function apply(ctx, config = {}) {
               url: recoveryControlPlane.url,
               authentication: "host-secret",
               action: "fresh-clone-recovery-only",
+            },
+          }),
+          ...(findingAdjudicationControlPlane === undefined ? {} : {
+            findingAdjudicationControlPlane: {
+              state: "active",
+              transport: "loopback",
+              url: findingAdjudicationControlPlane.url,
+              authentication: "host-secret",
+              action: "confirm-high-risk-retry-or-defer-only",
             },
           }),
         },

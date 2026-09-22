@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git, MacosSeatbeltAppServerConfinement, MacosSeatbeltCommandConfinement, seatbeltProfile, seatbeltReadRestrictedProfile } from "../src/index.js";
+import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, LocalFindingAdjudicationBroker, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git, MacosSeatbeltAppServerConfinement, MacosSeatbeltCommandConfinement, seatbeltProfile, seatbeltReadRestrictedProfile } from "../src/index.js";
 import { input, fixture, fixed, broken, adapters, finding, runCase } from "./helpers.js";
 
 test("strict contracts reject nested unknowns, duplicate ids and model permissions", () => {
@@ -84,6 +84,25 @@ test("trusted recovery control-plane policy holds only an environment reference 
   assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", recoveryControlPlane: { ...recoveryControlPlane, port: -1 } }), /INVALID_RECOVERY_CONTROL_PLANE/);
   assert.throws(() => validateHostPolicy({ ...f.policy, recoveryControlPlane }), /LIVE_RECOVERY_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE/);
   assert.throws(() => assertPaginationFixturePolicy({ ...f.policy, recoveryControlPlane }), /FIXTURE_REPOSITORY_POLICY_INVALID/);
+});
+test("trusted finding-adjudication control-plane policy holds only an environment reference outside fixtures", () => {
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const findingAdjudicationControlPlane = {
+    mode: "loopback-v1" as const,
+    credentialEnv: "DSH_DEVKIT_FINDING_ADJUDICATION_SECRET",
+    operatorId: "local-adjudication-operator",
+    port: 0,
+  };
+  assert.deepEqual(
+    validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", findingAdjudicationControlPlane }).findingAdjudicationControlPlane,
+    findingAdjudicationControlPlane,
+  );
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", findingAdjudicationControlPlane: { ...findingAdjudicationControlPlane, credentialEnv: "PATH" } }), /INVALID_FINDING_ADJUDICATION_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", findingAdjudicationControlPlane: { ...findingAdjudicationControlPlane, operatorId: "bad operator" } }), /INVALID_FINDING_ADJUDICATION_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", findingAdjudicationControlPlane: { ...findingAdjudicationControlPlane, port: -1 } }), /INVALID_FINDING_ADJUDICATION_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, findingAdjudicationControlPlane }), /LIVE_FINDING_ADJUDICATION_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE/);
+  assert.throws(() => assertPaginationFixturePolicy({ ...f.policy, findingAdjudicationControlPlane }), /FIXTURE_REPOSITORY_POLICY_INVALID/);
 });
 test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
   const f = fixture();
@@ -428,6 +447,50 @@ test("unconfirmed P1 requests human judgement without claiming readiness", async
 test("host-confirmed P1 triggers a fresh validation and review", async () => {
   let reviews = 0; const f = await runCase(() => ({ ...adapters({ review: async r => ({ snapshotId: r.snapshotId, reviewerId: "fixture", provider: "fixture", model: "fixture", findings: reviews++ === 0 ? [finding()] : [] }) }), confirmFinding: async () => true }));
   try { assert.equal(reviews, 2); assert.equal(f.result.retryCount, 1); assert.equal(f.result.readyForAcceptance, true); assert.equal(f.runtime.store.history(f.task.taskId).filter(e => e.type === "review").length, 2); } finally { await f.runtime.close(); }
+});
+test("host finding adjudication cannot confirm a high-risk finding for a different snapshot", async () => {
+  const f = fixture();
+  const runtime = new Devkit(f.policy, {
+    ...adapters({ review: async request => ({ snapshotId: request.snapshotId, reviewerId: "fixture", provider: "fixture", model: "fixture", findings: [finding()] }) }),
+    findingAdjudicator: {
+      async authorizeFinding(inspection) {
+        return {
+          action: "confirm",
+          taskId: inspection.taskId,
+          runId: inspection.runId,
+          snapshotId: "a".repeat(64),
+          findingFingerprint: inspection.finding.fingerprint,
+          fingerprint: inspection.fingerprint,
+          approvalId: "fixture-stale-finding-adjudication",
+        };
+      },
+    },
+  });
+  try {
+    const result = await runtime.run(runtime.create(input).taskId);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "FINDING_ADJUDICATION_STALE");
+  } finally {
+    await runtime.close();
+  }
+});
+test("an unavailable host finding adjudicator defers high risk rather than blocking as a pass", async () => {
+  const f = fixture();
+  const adjudicator = new LocalFindingAdjudicationBroker({ timeoutMs: 5000 });
+  adjudicator.close();
+  const runtime = new Devkit(f.policy, {
+    ...adapters({ review: async request => ({ snapshotId: request.snapshotId, reviewerId: "fixture", provider: "fixture", model: "fixture", findings: [finding()] }) }),
+    findingAdjudicator: adjudicator,
+  });
+  try {
+    const result = await runtime.run(runtime.create(input).taskId);
+    assert.equal(result.status, "awaiting_human");
+    assert.equal(result.reason, "unconfirmed_high_risk");
+    assert.equal(result.readyForAcceptance, false);
+    assert.ok(runtime.store.history(result.taskId).some(event => event.type === "triage" && (event.payload as { source?: string }).source === "unavailable"));
+  } finally {
+    await runtime.close();
+  }
 });
 test("low priority findings enter a deduplicated backlog", async () => {
   const f = await runCase(() => adapters({ review: async r => ({ snapshotId: r.snapshotId, reviewerId: "fixture", provider: "fixture", model: "fixture", findings: [finding("P2"), finding("P2")] }) }));

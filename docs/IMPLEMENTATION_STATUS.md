@@ -46,6 +46,15 @@ and queueing a fresh base clone. Requests expire, close declines them, and only 
 be pending for a task. There is no `dev_task_recover` tool, no old-workspace reuse, and no live
 provider/model path. The local secret is not multi-user identity or process attestation.
 
+Finding-adjudication increment (2026-09-23): an explicit disabled host policy may configure
+`findingAdjudicationControlPlane`, which creates a separate `127.0.0.1` local-secret page and
+host-only `LocalFindingAdjudicationBroker`. It receives a bounded redacted P0/P1 summary and
+binds one decision to task/run/task-version/snapshot/finding facts. A checkbox-protected confirm
+can only enter the existing finite repair/validation/review loop; defer, expiry, cancellation or
+closure leaves the issue awaiting human judgement. The native surface has no adjudication tool,
+cannot reject a finding into acceptance, and does not enable live execution. This is not
+independent evidence, multi-user identity, or live reviewer validation.
+
 Do not mark v0.1/M0–M3 complete. The original handoff and acceptance requirements remain
 unchanged; this PR does not lower them to match the implementation.
 
@@ -64,7 +73,8 @@ Next work, in order:
 2. Wire the direct client to native execution only after that transport boundary exists; then
    verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
    authorized disposable fixtures only.
-3. Add regression overlay/adjudication and harden recovery from a private-local assertion toward
-   independently auditable identity/process evidence; evolve frozen context only with explicit
-   bounds and evidence. Never reclaim a lease based on age alone.
+3. Add a host-authorized frozen regression overlay and harden local adjudication/recovery from
+   private-local assertions toward independently auditable evidence and identity/process proof;
+   evolve frozen context only with explicit bounds and evidence. Never reclaim a lease based on
+   age alone.
 4. Finish the original acceptance matrix before UI/feature extensions.

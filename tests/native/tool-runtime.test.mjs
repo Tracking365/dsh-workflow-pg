@@ -524,6 +524,100 @@ test("native recovery presentation fails closed when its declared host secret is
   }
 });
 
+test("native policy starts and disposes an authenticated finding-adjudication presentation without exposing a finding tool", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-adjudication-plane-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_ADJUDICATION_TEST_SECRET";
+  const secret = "native-adjudication-control-secret-32-bytes!";
+  const previous = process.env[credentialEnv];
+  process.env[credentialEnv] = secret;
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    findingAdjudicationControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-adjudication-operator",
+      port: 0,
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  let mounted = ctx.plugin(plugin, { configPath });
+  let adjudicationUrl;
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.findingAdjudication, { state: "configured", authority: "host-only" });
+    assert.deepEqual(doctor.value.nativeRuntime.findingAdjudicationControlPlane, {
+      state: "active",
+      transport: "loopback",
+      url: doctor.value.nativeRuntime.findingAdjudicationControlPlane.url,
+      authentication: "host-secret",
+      action: "confirm-high-risk-retry-or-defer-only",
+    });
+    adjudicationUrl = doctor.value.nativeRuntime.findingAdjudicationControlPlane.url;
+    assert.match(adjudicationUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const page = await fetch(`${adjudicationUrl}/`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Local adjudication secret/);
+    assert.equal(html.includes(secret), false);
+    assert.equal(ctx.tools.get("dev_task_adjudicate"), undefined);
+
+    await mounted.dispose();
+    mounted = undefined;
+    await assert.rejects(fetch(`${adjudicationUrl}/`));
+  } finally {
+    await mounted?.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
+test("native finding-adjudication presentation fails closed when its declared host secret is unavailable", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-adjudication-secret-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_ADJUDICATION_MISSING_SECRET";
+  const previous = process.env[credentialEnv];
+  delete process.env[credentialEnv];
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    findingAdjudicationControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-adjudication-operator",
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+  try {
+    await assert.rejects(async () => { await mounted; }, /FINDING_ADJUDICATION_CONTROL_PLANE_CREDENTIAL_UNAVAILABLE/);
+    assert.equal(ctx.tools.get("devkit_doctor"), undefined);
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
 test("native doctor treats an externally mounted workspace-write provider as non-executable until DevKit owns its boundary", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-workspace-write-"));
   const configPath = path.join(root, "policy.json");

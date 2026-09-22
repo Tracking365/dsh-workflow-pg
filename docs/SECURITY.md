@@ -163,6 +163,15 @@ fingerprint facts; no recovery capability is exposed as a model tool. Task histo
 hash of its approval artifact, never the raw artifact. This local-secret presentation is still
 not multi-user identity or independent process attestation.
 
+High-risk finding confirmation also stays host-only. The legacy `confirmFinding` callback is a
+test seam; an explicitly configured disabled native policy may instead supply
+`findingAdjudicationControlPlane`. Its separate loopback page receives only bounded, redacted
+P0/P1 finding data and binds a local-secret decision to task/run/snapshot/finding facts. Confirm
+requires an explicit repair checkbox and can only schedule the existing finite retry path; defer,
+expiry, cancellation, or page closure do not reject the finding or accept delivery. Audit/task
+events retain hashes rather than raw approval IDs. This is not independent evidence, multi-user
+identity, or a live-review guarantee.
+
 ## Explicit gaps / do not relax these to make tests pass
 
 * Native fixtures compose a real candidate-bound DSH parent and confirm that the official
@@ -176,10 +185,10 @@ not multi-user identity or independent process attestation.
   cancellation. The App Server profile blocks the main ambient home/config/cache locations and
   has a host test for non-enumerability, but it is not yet a complete file-read whitelist or a
   separately killable execution VM. A direct JSONL client now has synthetic protocol coverage
-  for strict per-request approvals, cancellation and exit-proof release. A loopback approval
-  queue/presentation is now explicitly native-policy-wired and has synthetic authentication,
-  CSRF, startup-failure, and unload coverage, but no direct-client execution, credential broker,
-  or actual-App-Server behavior evidence.
+  for strict per-request approvals, cancellation and exit-proof release. Loopback approval,
+  recovery, and high-risk finding-adjudication presentations are explicitly native-policy-wired
+  with synthetic authentication, CSRF, startup-failure, and unload coverage, but no direct-client
+  execution, credential broker, or actual-App-Server behavior evidence.
   The separate readonly reviewer has a lazy host configuration path but no live behavior
   evidence. There is no credential broker; live runs remain blocked.
 * Recovery never infers quiescence from a PID, timeout or lease age. The durable restart and
@@ -191,8 +200,9 @@ not multi-user identity or independent process attestation.
 * Reproduction uses a frozen, trusted Node TAP test plan. A general-purpose expected failure
   signature and newly proposed regression overlay are not implemented. A failed assertion
   alone is not sufficient for arbitrary business bugs outside this fixture.
-* A host `confirmFinding` callback is the trusted evidence seam. The supplied tests use an
-  explicit stub; independent production evidence adjudication remains to be built.
+* A host `confirmFinding` callback remains a compatibility test seam. The local finding-
+  adjudication presentation binds and logs a human decision but does not create independent
+  evidence, a multi-user authorization boundary, or live reviewer behavior.
 * A small frozen task-context bundle is available, but it is explicit Git-base text only—not a
   complete semantic project-context retriever, regression overlay, or large-repository search.
 * Process cancellation is exercised by the fixture on macOS. Windows behavior and all live

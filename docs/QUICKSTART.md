@@ -210,3 +210,39 @@ plugin loading.
 This is a private-local-host control, not a multi-user identity or process-attestation system.
 Do not share its secret or use it to assert that an unverified writer stopped. Public `resume`
 remains read-only and cannot release the lease.
+
+### Optional high-risk finding adjudication presentation
+
+This is a third, separate local presentation. It does not enable Codex, a model connection, or
+`dev_task_run`, and it does not add `dev_task_adjudicate`. It can only process a pending P0/P1
+review finding from an active host workflow. Use a different dedicated local secret of at least
+32 characters:
+
+```sh
+export DSH_DEVKIT_ADJUDICATION_SECRET='a-third-local-secret-of-at-least-32-characters'
+```
+
+Add this host-owned block in a disabled policy:
+
+```json
+"findingAdjudicationControlPlane": {
+  "mode": "loopback-v1",
+  "credentialEnv": "DSH_DEVKIT_ADJUDICATION_SECRET",
+  "operatorId": "local-adjudication-operator",
+  "port": 0
+}
+```
+
+The listener binds only `127.0.0.1`; with `port: 0`, `devkit_doctor` reports its URL under
+`nativeRuntime.findingAdjudicationControlPlane`. The page shows a redacted, bounded finding
+summary plus task/run/snapshot identifiers—not task prose. A confirmation needs an explicit
+checkbox and is bound to that exact finding fingerprint and candidate snapshot. It only causes
+the normal limited repair → validation → review loop to continue; it cannot mark the finding
+rejected, release a recovery lease, or accept delivery. Choosing defer, expiry, or page closure
+keeps the high-risk issue for human judgement rather than allowing a green result. In the current
+disabled native profile no writer can create a pending finding; the page is pre-wired for the
+future execution boundary and remains non-live.
+
+This is also a private-local-host control, not independent evidence, multi-user authorization,
+or a substitute for an actual reviewer. Do not share its secret or use it to override an
+unverified high-risk finding.

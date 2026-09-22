@@ -43,12 +43,20 @@ export interface RecoveryControlPlanePolicy {
   operatorId: string;
   port?: number;
 }
+/** Host-only configuration for high-risk review-finding adjudication. */
+export interface FindingAdjudicationControlPlanePolicy {
+  mode: "loopback-v1";
+  credentialEnv: string;
+  operatorId: string;
+  port?: number;
+}
 export interface HostPolicy {
   dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
   reviewer?: ReviewerPolicy;
   codexAppServer?: CodexAppServerPolicy;
   codexApprovalControlPlane?: CodexApprovalControlPlanePolicy;
   recoveryControlPlane?: RecoveryControlPlanePolicy;
+  findingAdjudicationControlPlane?: FindingAdjudicationControlPlanePolicy;
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }
@@ -95,8 +103,33 @@ export interface RecoveryAuthorization {
 export interface RecoveryAuthority {
   authorizeRecovery(inspection: RecoveryInspection): Promise<unknown>;
 }
+/** Exact facts a host authority must bind before a high-risk finding can retry. */
+export interface FindingAdjudicationInspection {
+  readonly taskId: string;
+  readonly runId: string;
+  readonly taskVersion: number;
+  readonly snapshotId: string;
+  readonly finding: Finding;
+  readonly fingerprint: string;
+}
+/** Host-only result; a model never receives an adjudication capability. */
+export interface FindingAdjudicationAuthorization {
+  readonly action: "confirm" | "defer";
+  readonly taskId: string;
+  readonly runId: string;
+  readonly snapshotId: string;
+  readonly findingFingerprint: string;
+  readonly fingerprint: string;
+  readonly approvalId: string;
+}
+/** A real authority must bind a local human decision to one exact finding. */
+export interface FindingAdjudicator {
+  authorizeFinding(inspection: FindingAdjudicationInspection, signal: AbortSignal): Promise<unknown>;
+}
 export interface RuntimeAdapters {
   executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean>;
+  /** Preferred host-only high-risk finding authority; `confirmFinding` remains a test seam. */
+  findingAdjudicator?: FindingAdjudicator;
   /** Host-owned command boundary; a missing confinement must not be treated as a live sandbox. */
   commandConfinement?: CommandConfinement;
   /** Trusted host-only guard run before any fixture verification command. */
@@ -162,7 +195,8 @@ export class Devkit {
         : { state: "disabled" },
       executor: this.adapters.executor ? { family: this.adapters.executor.family, kind: this.adapters.executor.kind } : { state: "unconfigured" },
       reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" },
-      recovery: this.adapters.recoveryAuthority ? { state: "configured", authority: "host-only" } : { state: "unconfigured" } };
+      recovery: this.adapters.recoveryAuthority ? { state: "configured", authority: "host-only" } : { state: "unconfigured" },
+      findingAdjudication: this.adapters.findingAdjudicator ? { state: "configured", authority: "host-only" } : { state: "unconfigured" } };
   }
   async run(id: string, signal: AbortSignal = new AbortController().signal, executorOverride?: CodeExecutor): Promise<TaskRecord> {
     if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
@@ -286,9 +320,18 @@ export class Devkit {
           set({}, "backlog", { snapshotId: candidate.id, findings: backlog });
           let confirmed = high.length > 0;
           for (const finding of high) {
-            const proof = this.adapters.confirmFinding ? await this.adapters.confirmFinding(finding, { ...request, snapshot: candidate }) : false;
-            set({}, "triage", { snapshotId: candidate.id, fingerprint: finding.fingerprint, disposition: proof ? "confirmed" : "unconfirmed" });
-            if (!proof) confirmed = false;
+            const inspection = this.inspectFindingAdjudication(id, candidate.id, finding);
+            const decision = await this.adjudicateFinding(inspection, finding, { ...request, snapshot: candidate }, signal);
+            signal.throwIfAborted();
+            set({}, "triage", {
+              snapshotId: candidate.id,
+              fingerprint: finding.fingerprint,
+              disposition: decision.action === "confirm" ? "confirmed" : "unconfirmed",
+              source: decision.source,
+              ...(decision.approvalHash === undefined ? {} : { approvalHash: decision.approvalHash }),
+              ...(decision.authorizationFingerprint === undefined ? {} : { authorizationFingerprint: decision.authorizationFingerprint }),
+            });
+            if (decision.action !== "confirm") confirmed = false;
           }
           if (capture().id !== candidate.id) throw new DevkitError("TRIAGE_MUTATED_SOURCE");
           if (high.length && !confirmed) return set({ status: "awaiting_human", readyForAcceptance: false, reason: "unconfirmed_high_risk" }, "human_required");
@@ -299,7 +342,7 @@ export class Devkit {
             set({}, "artifact", { ...artifact, snapshotId: candidate.id });
             return set({ status: "awaiting_human", reason: "final_acceptance", readyForAcceptance: true }, "ready_for_acceptance", { snapshotId: candidate.id, mode: "fixture" });
           }
-          feedback = JSON.stringify(high);
+          feedback = redact(JSON.stringify(high));
         }
         const current = this.store.get(id);
         if (current.retryCount >= this.policy.maxRetries) return set({ status: "awaiting_human", reason: "retry_limit", readyForAcceptance: false }, "retry_limit");
@@ -329,6 +372,59 @@ export class Devkit {
     if (this.store.hasLease(id)) throw new DevkitError("STOP_UNCONFIRMED");
     if (current.status === "cancelled" || current.status === "completed") return current;
     return this.store.update(id, current.version, { status: "cancelled", readyForAcceptance: false, reason: "cancelled" }, "cancelled");
+  }
+  private inspectFindingAdjudication(id: string, snapshotId: string, finding: Finding): FindingAdjudicationInspection {
+    const task = this.store.get(id);
+    if (task.status !== "running" || task.runId === undefined) throw new DevkitError("FINDING_ADJUDICATION_NOT_RUNNING");
+    const currentFinding = structuredClone(finding);
+    return {
+      taskId: task.taskId,
+      runId: task.runId,
+      taskVersion: task.version,
+      snapshotId,
+      finding: currentFinding,
+      fingerprint: hash({
+        taskId: task.taskId,
+        runId: task.runId,
+        taskVersion: task.version,
+        snapshotId,
+        finding: currentFinding,
+      }),
+    };
+  }
+  private validateFindingAdjudication(value: unknown, inspection: FindingAdjudicationInspection): FindingAdjudicationAuthorization {
+    const authorization = object(value, ["action", "taskId", "runId", "snapshotId", "findingFingerprint", "fingerprint", "approvalId"]);
+    if (authorization.action !== "confirm" && authorization.action !== "defer") throw new DevkitError("FINDING_ADJUDICATION_REJECTED");
+    const taskId = text(authorization.taskId, "adjudication.taskId", 100);
+    const runId = text(authorization.runId, "adjudication.runId", 100);
+    const snapshotId = text(authorization.snapshotId, "adjudication.snapshotId", 64);
+    const findingFingerprint = text(authorization.findingFingerprint, "adjudication.findingFingerprint", 64);
+    const fingerprint = text(authorization.fingerprint, "adjudication.fingerprint", 64);
+    const approvalId = text(authorization.approvalId, "adjudication.approvalId", 200);
+    if (taskId !== inspection.taskId || runId !== inspection.runId || snapshotId !== inspection.snapshotId || findingFingerprint !== inspection.finding.fingerprint || fingerprint !== inspection.fingerprint) throw new DevkitError("FINDING_ADJUDICATION_STALE");
+    return { action: authorization.action, taskId, runId, snapshotId, findingFingerprint, fingerprint, approvalId };
+  }
+  private async adjudicateFinding(
+    inspection: FindingAdjudicationInspection,
+    finding: Finding,
+    request: ExecutionRequest,
+    signal: AbortSignal,
+  ): Promise<{ readonly action: "confirm" | "defer"; readonly source: "host-adjudicator" | "legacy-test-seam" | "unconfigured" | "unavailable"; readonly approvalHash?: string; readonly authorizationFingerprint?: string }> {
+    signal.throwIfAborted();
+    const authority = this.adapters.findingAdjudicator;
+    if (authority !== undefined) {
+      try {
+        const authorization = this.validateFindingAdjudication(await authority.authorizeFinding(structuredClone(inspection), signal), inspection);
+        return { action: authorization.action, source: "host-adjudicator", approvalHash: hash(authorization.approvalId), authorizationFingerprint: authorization.fingerprint };
+      } catch (error) {
+        if (error instanceof DevkitError && (error.code === "FINDING_ADJUDICATION_CLOSED" || error.code === "FINDING_ADJUDICATION_CAPACITY")) return { action: "defer", source: "unavailable" };
+        throw error;
+      }
+    }
+    if (this.adapters.confirmFinding !== undefined) {
+      return { action: await this.adapters.confirmFinding(finding, request) ? "confirm" : "defer", source: "legacy-test-seam" };
+    }
+    return { action: "defer", source: "unconfigured" };
   }
   private expectedRecoverySnapshot(id: string): string | undefined {
     for (const event of [...this.store.history(id)].reverse()) {

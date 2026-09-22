@@ -11,6 +11,8 @@ export * from "./adapters/local-approval-broker.js";
 export * from "./adapters/local-approval-control-plane.js";
 export * from "./adapters/local-recovery-broker.js";
 export * from "./adapters/local-recovery-control-plane.js";
+export * from "./adapters/local-finding-adjudication-broker.js";
+export * from "./adapters/local-finding-adjudication-control-plane.js";
 export * from "./adapters/workspace.js";
 export * from "./adapters/context.js";
 export * from "./adapters/review.js";

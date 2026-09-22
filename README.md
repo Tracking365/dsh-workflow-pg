@@ -28,9 +28,15 @@ live 的阻断。
 再经二次检查后才会保留旧副本并排入一个从冻结基准新建的副本。它没有 `dev_task_recover` 工具、不
 会释放原地工作区，也不会启动模型或解除 live 阻断。
 
+同日新增的高风险审核裁决页也只在 disabled native 策略显式声明
+`findingAdjudicationControlPlane` 并提供独立本机密钥时才启动。它展示经脱敏的 P0/P1 发现摘要，
+将操作者选择绑定到 task/run/候选快照/发现指纹；“确认”还要求明确勾选，并且只进入既有的修复、
+验证和再次审核循环，“保留给人工”则不会放行任务。它没有 `dev_task_adjudicate` 工具，不能驳回发现
+后自动完成任务，也不会启动模型或解除 live 阻断。
+
 ## 已实现
 
-TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任务与事件、持久仓库运行锁、任务创建时冻结基准提交、宿主白名单内的冻结上下文、独立 Git 副本、包含未跟踪文件/二进制/模式的快照、冻结测试与范围检查、真实 Node TAP 验证、独立审核协议、待办去重、共享两次返修预算、补丁产物和宿主人工验收。重启时遗留的运行会变为 `interrupted` 并保留 lease；可选的本机认证恢复页只允许宿主侧、绑定当前快照事实且由操作者明确确认旧写入者已停止的恢复授权，保留旧副本并从冻结基准创建全新候选副本。
+TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任务与事件、持久仓库运行锁、任务创建时冻结基准提交、宿主白名单内的冻结上下文、独立 Git 副本、包含未跟踪文件/二进制/模式的快照、冻结测试与范围检查、真实 Node TAP 验证、独立审核协议、待办去重、共享两次返修预算、补丁产物和宿主人工验收。重启时遗留的运行会变为 `interrupted` 并保留 lease；可选的本机认证恢复页只允许宿主侧、绑定当前快照事实且由操作者明确确认旧写入者已停止的恢复授权，保留旧副本并从冻结基准创建全新候选副本。独立的本机认证裁决页只能确认高风险发现以触发有限返修，或保留给人工，不能作为自动验收或自动驳回通道。
 
 提供 DSH bundle patch、七个工具定义、生命周期关闭入口、官方 `@deepseek-ai/dsh-subagent-codex` 的薄桥接，以及独立的 DeepSeek HTTP 只读审核适配器。Codex 桥接只经 DSH 的 `subagents` 服务委托，不会自行调用 CLI/API；候选会话组成层会从当前工具 Agent 建立谱系、以候选副本的 canonical `cwd` 创建短生命周期父会话，再由底层桥接再次校验目录相等。不能证明子代理或该父会话已退出时会保留写锁。另有 `pagination-v1` 确定性 fixture：它只接受带标记的临时分页仓库、固定 `src/` 写入范围、冻结的 `test/` 与固定 Node TAP 命令，执行器和审核器均为宿主代码，不调用模型。离线 fixture 与独立审核适配器不会使用真实账号或自动接入 live 工作流；唯一的当前登录态调用是上述一次受控临时 fixture。
 
@@ -67,7 +73,7 @@ dsh --profile devkit-eval --dump-config
 dsh --profile devkit-eval --help
 ```
 
-上面的流程已在本次环境的临时 headless profile 执行。工具包括 `devkit_doctor`、`dev_task_create/run/status/cancel/resume/report`。默认仅任务管理可用，`run` 安全阻塞；普通 `resume` 不能释放中断运行的 lease。可选的 host-secret 恢复页也不暴露 `dev_task_recover`：它只会在核验旧写入者停止后排入全新副本，且保留旧副本。唯一例外是双重明确开启的 `pagination-v1` 测试 fixture，它不能指定任意仓库、命令或模型；请勿把 `--help` 替换为真实任务文本，除非你已完成独立的模型、执行器与沙箱配置。
+上面的流程已在本次环境的临时 headless profile 执行。工具包括 `devkit_doctor`、`dev_task_create/run/status/cancel/resume/report`。默认仅任务管理可用，`run` 安全阻塞；普通 `resume` 不能释放中断运行的 lease。可选的 host-secret 恢复页不暴露 `dev_task_recover`，高风险裁决页也不暴露 `dev_task_adjudicate`：前者只会在核验旧写入者停止后排入全新副本，后者只能触发重做或保留人工判断。唯一例外是双重明确开启的 `pagination-v1` 测试 fixture，它不能指定任意仓库、命令或模型；请勿把 `--help` 替换为真实任务文本，除非你已完成独立的模型、执行器与沙箱配置。
 
 请先阅读 [QUICKSTART](docs/QUICKSTART.md)、[SECURITY](docs/SECURITY.md)、[DSH_COMPATIBILITY](docs/DSH_COMPATIBILITY.md) 和 [IMPLEMENTATION_STATUS](docs/IMPLEMENTATION_STATUS.md)。
 
@@ -83,4 +89,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批页面、冻结上下文、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批/恢复/高风险裁决页面、冻结上下文、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
