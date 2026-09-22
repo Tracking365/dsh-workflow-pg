@@ -5,12 +5,29 @@ import type { CommandSpec } from "../adapters/process.js";
 
 /** This schema belongs to the trusted host, never to a model-facing tool. */
 export function validateHostPolicy(value: unknown): HostPolicy {
-  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
+  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
   const dataRoot = text(p.dataRoot, "dataRoot");
   const executionMode = String(p.executionMode);
   if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(executionMode)) throw new DevkitError("INVALID_HOST_POLICY");
   const fixtureDriver = p.fixtureDriver === undefined ? undefined : text(p.fixtureDriver, "fixtureDriver", 100);
   if ((executionMode === "fixture" && fixtureDriver !== "pagination-v1") || (executionMode !== "fixture" && fixtureDriver !== undefined)) throw new DevkitError("INVALID_FIXTURE_DRIVER");
+  let reviewer: HostPolicy["reviewer"];
+  if (p.reviewer !== undefined) {
+    if (executionMode === "fixture") throw new DevkitError("LIVE_REVIEWER_NOT_ALLOWED_IN_FIXTURE");
+    const r = object(p.reviewer, ["endpoint", "model", "credentialEnv", "timeoutMs"]);
+    const endpoint = text(r.endpoint, "reviewer.endpoint", 500);
+    try {
+      const url = new URL(endpoint);
+      if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !url.pathname.endsWith("/chat/completions")) throw new DevkitError("INVALID_REVIEW_ENDPOINT");
+    } catch (error) {
+      if (error instanceof DevkitError) throw error;
+      throw new DevkitError("INVALID_REVIEW_ENDPOINT");
+    }
+    const credentialEnv = text(r.credentialEnv, "reviewer.credentialEnv", 100);
+    if (!/^DSH_DEVKIT_[A-Z0-9_]{1,80}$/.test(credentialEnv)) throw new DevkitError("INVALID_REVIEW_CREDENTIAL_ENV");
+    if (r.timeoutMs !== undefined && (!Number.isSafeInteger(r.timeoutMs) || Number(r.timeoutMs) < 1000 || Number(r.timeoutMs) > 120000)) throw new DevkitError("INVALID_REVIEW_TIMEOUT");
+    reviewer = { endpoint, model: text(r.model, "reviewer.model", 200), credentialEnv, ...(r.timeoutMs === undefined ? {} : { timeoutMs: Number(r.timeoutMs) }) };
+  }
   const map = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("INVALID_HOST_POLICY");
     return object(value, Object.keys(value));
@@ -36,6 +53,7 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     dataRoot,
     executionMode: executionMode as HostPolicy["executionMode"],
     ...(fixtureDriver === undefined ? {} : { fixtureDriver: fixtureDriver as "pagination-v1" }),
+    ...(reviewer === undefined ? {} : { reviewer }),
     repositories,
     verificationProfiles,
     maxRetries: Number(p.maxRetries),

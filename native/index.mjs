@@ -3,12 +3,13 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Devkit, DevkitError, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { DeepSeekReviewer, Devkit, DevkitError, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
 const SAFE_CODEX_PERMISSION_MODES = new Set(["never", "approve-for-me"]);
 const DANGEROUS_CODEX_PERMISSION_MODE = "dangerously-bypass-approvals-and-sandbox";
+const CODEX_WORKSPACE_WRITE_MODE = "approve-for-me";
 const string = { type: "string", minLength: 1 };
 const list = { type: "array", items: string };
 const record = (properties, required = Object.keys(properties)) => ({ type: "object", properties, required, additionalProperties: false });
@@ -45,6 +46,34 @@ function isSafeCodexProvider(provider) {
   return SAFE_CODEX_PERMISSION_MODES.has(codexPermissionMode(provider));
 }
 
+/**
+ * The official provider merges this object into its credential-scrubbed child
+ * environment. DevKit's future broker must be an explicit, separately
+ * reviewed integration; arbitrary provider env entries never qualify a writer
+ * for that path.
+ */
+function codexProviderEnvironment(provider) {
+  try {
+    const environment = provider?.config?.env;
+    if (environment === undefined) return undefined;
+    if (!environment || typeof environment !== "object" || Array.isArray(environment)) return undefined;
+    return Object.keys(environment).length === 0 ? "empty" : "nonempty";
+  } catch {
+    return undefined;
+  }
+}
+
+function codexProviderMetadata(provider) {
+  try {
+    const capabilities = provider?.capabilities;
+    const inheritsParentContext = provider?.inheritsParentContext;
+    if ((capabilities !== undefined && (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities))) || (inheritsParentContext !== undefined && typeof inheritsParentContext !== "boolean")) return undefined;
+    return { capabilities: capabilities ?? {}, inheritsParentContext: inheritsParentContext === true };
+  } catch {
+    return undefined;
+  }
+}
+
 export function codexProviderStatus(ctx) {
   const subagents = ctx.get("subagents");
   if (!subagents || typeof subagents.getProvider !== "function") {
@@ -63,20 +92,39 @@ export function codexProviderStatus(ctx) {
       ...(permissionMode === undefined ? {} : { permissionMode }),
     };
   }
-  const capabilities = provider.capabilities ?? {};
+  const explicitEnvironment = codexProviderEnvironment(provider);
+  if (explicitEnvironment === undefined) {
+    return { state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_ENV_UNVERIFIED", permissionMode };
+  }
+  if (explicitEnvironment !== "empty") {
+    return { state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_ENV_NOT_EMPTY", permissionMode };
+  }
+  const metadata = codexProviderMetadata(provider);
+  if (metadata === undefined) {
+    return { state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_METADATA_UNVERIFIED", permissionMode };
+  }
+  const writerSandbox = permissionMode === CODEX_WORKSPACE_WRITE_MODE
+    ? "workspace-write-provider-declared"
+    : "unverified";
   return {
     state: "supported",
     provider: "codex",
     permissionMode,
     permissionEnforcement: "provider-declared",
+    explicitEnvironment,
+    writerSandbox,
+    // The provider wire emits an explicit `sandbox: workspace-write` only for
+    // approve-for-me. This remains a provider-declared prerequisite, not an
+    // OS-boundary claim or a live enablement switch.
+    writerLaunchEligible: permissionMode === CODEX_WORKSPACE_WRITE_MODE,
     liveValidated: false,
-    inheritsParentContext: provider.inheritsParentContext === true,
+    inheritsParentContext: metadata.inheritsParentContext,
     capabilities: {
-      agentOptions: capabilities.agentOptions === true,
-      outputSchema: capabilities.outputSchema === true,
-      depthLimit: capabilities.depthLimit === true,
-      toolFilter: capabilities.toolFilter === true,
-      persona: capabilities.persona === true,
+      agentOptions: metadata.capabilities.agentOptions === true,
+      outputSchema: metadata.capabilities.outputSchema === true,
+      depthLimit: metadata.capabilities.depthLimit === true,
+      toolFilter: metadata.capabilities.toolFilter === true,
+      persona: metadata.capabilities.persona === true,
     },
   };
 }
@@ -84,8 +132,8 @@ export function codexProviderStatus(ctx) {
 export function codexExecutor(ctx, exec) {
   const subagents = ctx.get("subagents");
   const agents = ctx.get("agents");
-  const provider = codexProvider(ctx);
-  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || !isSafeCodexProvider(provider)) return undefined;
+  const status = codexProviderStatus(ctx);
+  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || status.state !== "supported" || status.writerLaunchEligible !== true) return undefined;
   return createDshCandidateWorkspaceCodexExecutor({ agents, subagents, parent: exec.agent });
 }
 
@@ -108,7 +156,7 @@ export function toolDefinitions(runtime, services = {}) {
     define("dev_task_create", "Create a task in a host-authorized repository; does not execute code.", taskSchema, args => runtime.create(args)),
     define("dev_task_run", services.fixtureMode === true
       ? "Run the explicit deterministic pagination fixture; it cannot select arbitrary code or commands."
-      : "Run an authorized task. Live writes are currently blocked pending sandbox integration.", idSchema, (args, exec) => runtime.run(parseId(args), exec.signal, services.executor ? services.executor(exec) : undefined)),
+      : "Run an authorized task. Live writes are currently blocked pending verified App Server isolation and a credential broker.", idSchema, (args, exec) => runtime.run(parseId(args), exec.signal, services.executor ? services.executor(exec) : undefined)),
     define("dev_task_status", "Read the durable task state and readiness, not a model summary.", idSchema, args => runtime.status(parseId(args))),
     define("dev_task_cancel", "Request cancellation and wait for the owned operation to settle.", idSchema, args => runtime.cancel(parseId(args))),
     define("dev_task_resume", "Check recovery eligibility; unresolved recovery requires an operator.", idSchema, args => runtime.resume(parseId(args))),
@@ -136,7 +184,16 @@ export function apply(ctx, config = {}) {
   } else if (fixtureDriver !== undefined) {
     throw new DevkitError("NATIVE_FIXTURE_MODE_NOT_ALLOWED");
   }
-  const runtime = new Devkit(policy, policy.executionMode === "fixture" ? createPaginationFixtureAdapters() : {});
+  // Constructing the adapter validates only host metadata. Its credential
+  // callback is lazy and is never read by doctor, task creation, or a blocked
+  // live run.
+  const reviewer = policy.reviewer === undefined ? undefined : new DeepSeekReviewer({
+    endpoint: policy.reviewer.endpoint,
+    model: policy.reviewer.model,
+    timeoutMs: policy.reviewer.timeoutMs,
+    credential: () => process.env[policy.reviewer.credentialEnv] ?? "",
+  });
+  const runtime = new Devkit(policy, policy.executionMode === "fixture" ? createPaginationFixtureAdapters() : reviewer === undefined ? {} : { reviewer });
   ctx.on("dispose", () => runtime.close());
   for (const definition of toolDefinitions(runtime, {
     doctor: () => ({
@@ -145,6 +202,9 @@ export function apply(ctx, config = {}) {
         state: "supported",
         registry: "dsh-tools",
         fixtureMode: policy.executionMode === "fixture" ? PAGINATION_FIXTURE_DRIVER : "disabled",
+        reviewer: policy.reviewer === undefined
+          ? { state: "unconfigured" }
+          : { state: "configured", provider: "deepseek", model: policy.reviewer.model, credential: "deferred" },
       },
       codexSubagent: codexProviderStatus(ctx),
     }),

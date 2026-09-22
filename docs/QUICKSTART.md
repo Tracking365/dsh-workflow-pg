@@ -47,7 +47,10 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 ```
 
 The provider may then appear as `codexSubagent.state: "supported"`; this is registration
-evidence only. Native DevKit remains `executionMode: "disabled"`, so `dev_task_run` still
+evidence only. Its `writerSandbox` must be treated as `unverified` for `permissionMode: "never"`.
+The locked provider only emits an explicit App Server `workspace-write` sandbox request for
+`approve-for-me` with an empty explicit `env`; that is a necessary protocol prerequisite, not an
+OS-boundary result. Native DevKit remains `executionMode: "disabled"`, so `dev_task_run` still
 does not start Codex. Do not configure `dangerously-bypass-approvals-and-sandbox` or provide
 credentials for this check.
 
@@ -73,6 +76,12 @@ host-owned file, not a task payload, and must not be writable by a code executio
 {
   "dataRoot": "/absolute/path/outside/repos/devkit-data",
   "executionMode": "disabled",
+  "reviewer": {
+    "endpoint": "https://api.deepseek.com/chat/completions",
+    "model": "your-independent-review-model",
+    "credentialEnv": "DSH_DEVKIT_REVIEWER_API_KEY",
+    "timeoutMs": 60000
+  },
   "repositories": {
     "demo": {
       "path": "/absolute/path/to/a/test-repo",
@@ -96,6 +105,11 @@ host-owned file, not a task payload, and must not be writable by a code executio
 
 This is the implementation's `HostPolicy` format. It is **not** a promise that the broader
 handoff example config has been completely implemented; unknown keys are rejected.
+
+The optional reviewer block stores only a fixed HTTPS endpoint, model and an environment-variable
+reference; never put a token in the JSON file. The current disabled path does not read this
+variable or make a request.
+
 Ask DSH to run doctor, create a bugfix task with alias demo/profile node-tap and acceptance
 ID A1, then inspect status/report. `dev_task_run` returns a blocked task with
 `LIVE_SANDBOX_NOT_IMPLEMENTED`. That is intentional. Do not use another shell tool to

@@ -66,10 +66,17 @@ official provider owns its child cwd and has no public per-run cwd override. A m
 `CODEX_WORKSPACE_BINDING_UNAVAILABLE` without starting a child. After a published child, the
 bridge waits for both the child run and candidate parent handle to dispose; an unproven teardown
 retains the writer lease. Under the exact locked official provider, the native boundary also
-reads its declared `permissionMode` and refuses to construct an executor for
-`dangerously-bypass-approvals-and-sandbox` or an absent, unreadable, or unknown mode. This
-configuration guard does not make `never` or `approve-for-me` an OS sandbox. The default disabled policy rejects a
-task before this composition is invoked.
+reads its declared `permissionMode`, explicit provider environment and metadata. It refuses a
+full-access, unknown/unreadable, or nonempty-env provider. It reserves future writer construction
+for the locked provider's `approve-for-me` mode with `env: {}`, because the tested official wire
+then sends `sandbox: "workspace-write"`; `never` remains observable but is not writer-eligible.
+This configuration guard does not make either provider mode an OS sandbox. The default disabled
+policy rejects a task before this composition is invoked.
+
+A host policy may configure the separate DeepSeek reviewer with an HTTPS completions endpoint,
+fixed model and a `DSH_DEVKIT_*` credential environment-variable name. The secret itself is not
+accepted in JSON, is read only at an eventual review call, and is never handed to the Codex
+provider's explicit environment. This is a configuration boundary only: no live review has run.
 
 `git()` disables hooks for generated fixture repositories; it is not a production Git
 adapter and does not implement organization signing/hooks policies. No host commit/push/
@@ -88,8 +95,8 @@ capabilities, binding to operator identity and expiration remain unimplemented.
   an App Server and observed that cwd and a single exact scoped write. A separate host-level
   Seatbelt fixture proves a reusable command wrapper can deny configured reads, external writes
   and network. It does not yet wrap the App Server, supply an isolated model credential, or
-  prove App Server cancellation. There is no credential broker or readonly tool-using reviewer;
-  live runs remain blocked.
+  prove App Server cancellation. The separate readonly reviewer has a lazy host configuration
+  path but no live behavior evidence. There is no credential broker; live runs remain blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.

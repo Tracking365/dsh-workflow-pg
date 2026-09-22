@@ -262,6 +262,9 @@ test("real official Codex provider is visible to the native doctor without start
       provider: "codex",
       permissionMode: "never",
       permissionEnforcement: "provider-declared",
+      explicitEnvironment: "empty",
+      writerSandbox: "unverified",
+      writerLaunchEligible: false,
       liveValidated: false,
       inheritsParentContext: false,
       capabilities: {
@@ -278,6 +281,103 @@ test("real official Codex provider is visible to the native doctor without start
     await toolsFiber.dispose();
     await providerFiber.dispose();
     await disposeSubprocess();
+    await subagentsFiber.dispose();
+    await disposePrompt();
+  }
+});
+
+test("native doctor configures an independent reviewer without probing its credential or endpoint", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-reviewer-config-"));
+  const configPath = path.join(root, "policy.json");
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    reviewer: {
+      endpoint: "https://api.deepseek.com/chat/completions",
+      model: "deepseek-review",
+      credentialEnv: "DSH_DEVKIT_REVIEWER_API_KEY",
+      timeoutMs: 45000,
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.nativeRuntime.reviewer, {
+      state: "configured", provider: "deepseek", model: "deepseek-review", credential: "deferred",
+    });
+    assert.deepEqual(doctor.value.reviewer, { family: "deepseek", kind: "live" });
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+  }
+});
+
+test("native doctor requires the official provider's explicit workspace-write mode before constructing a future writer", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-workspace-write-"));
+  const configPath = path.join(root, "policy.json");
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"), executionMode: "disabled", repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const subagentsFiber = ctx.plugin(SubagentRuntime, { maxDepth: 1, maxActiveSubagents: 1 });
+  await subagentsFiber;
+  const disposeAgents = ctx.provide("agents", { create() { throw new Error("the doctor fixture must not create a candidate parent"); } });
+  let spawnCalls = 0;
+  const disposeSubprocess = ctx.provide("subprocess", {
+    spawn() { spawnCalls += 1; throw new Error("the doctor fixture must not start Codex"); },
+  });
+  const providerFiber = ctx.plugin(codexProvider, {
+    providerName: "codex", env: {}, permissionMode: "approve-for-me", disposeGraceMs: 3000,
+  });
+  await providerFiber;
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.codexSubagent, {
+      state: "supported",
+      provider: "codex",
+      permissionMode: "approve-for-me",
+      permissionEnforcement: "provider-declared",
+      explicitEnvironment: "empty",
+      writerSandbox: "workspace-write-provider-declared",
+      writerLaunchEligible: true,
+      liveValidated: false,
+      inheritsParentContext: false,
+      capabilities: {
+        agentOptions: false,
+        outputSchema: false,
+        depthLimit: false,
+        toolFilter: false,
+        persona: false,
+      },
+    });
+    const executor = native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: root } } } });
+    assert.equal(executor?.family, "codex-app-server");
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await providerFiber.dispose();
+    await disposeSubprocess();
+    await disposeAgents();
     await subagentsFiber.dispose();
     await disposePrompt();
   }
@@ -359,6 +459,62 @@ test("native doctor fails closed when a Codex provider's permission mode cannot 
     state: "blocked",
     provider: "codex",
     reason: "CODEX_PERMISSION_MODE_UNVERIFIED",
+  });
+  assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: "/fixture" } } } }), undefined);
+});
+
+test("native doctor rejects nonempty explicit Codex provider environments", () => {
+  const provider = {
+    config: { permissionMode: "approve-for-me", env: { PATH: "/unexpected" } },
+    capabilities: {},
+    inheritsParentContext: false,
+  };
+  const ctx = {
+    get(name) {
+      if (name === "subagents") return { getProvider() { return provider; } };
+      if (name === "agents") return { create() { throw new Error("must not create a parent for an unverified provider environment"); } };
+      return undefined;
+    },
+  };
+  assert.deepEqual(native.codexProviderStatus(ctx), {
+    state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_ENV_NOT_EMPTY", permissionMode: "approve-for-me",
+  });
+  assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: "/fixture" } } } }), undefined);
+});
+
+test("native doctor requires an explicit empty Codex provider environment", () => {
+  const provider = {
+    config: { permissionMode: "approve-for-me" },
+    capabilities: {},
+    inheritsParentContext: false,
+  };
+  const ctx = {
+    get(name) {
+      if (name === "subagents") return { getProvider() { return provider; } };
+      if (name === "agents") return { create() { throw new Error("must not create a parent for a provider without an explicit environment"); } };
+      return undefined;
+    },
+  };
+  assert.deepEqual(native.codexProviderStatus(ctx), {
+    state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_ENV_UNVERIFIED", permissionMode: "approve-for-me",
+  });
+  assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: "/fixture" } } } }), undefined);
+});
+
+test("native doctor fails closed when Codex provider metadata cannot be read", () => {
+  const provider = { config: { permissionMode: "approve-for-me", env: {} } };
+  Object.defineProperty(provider, "capabilities", {
+    get() { throw new Error("unreadable provider metadata"); },
+  });
+  const ctx = {
+    get(name) {
+      if (name === "subagents") return { getProvider() { return provider; } };
+      if (name === "agents") return { create() { throw new Error("must not create a parent for unreadable metadata"); } };
+      return undefined;
+    },
+  };
+  assert.deepEqual(native.codexProviderStatus(ctx), {
+    state: "blocked", provider: "codex", reason: "CODEX_PROVIDER_METADATA_UNVERIFIED", permissionMode: "approve-for-me",
   });
   assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: "/fixture" } } } }), undefined);
 });

@@ -488,7 +488,7 @@ test("DshCandidateWorkspaceCodexExecutor fails closed when its candidate parent 
   assert.equal(childDisposals, 1, "the published Codex child still receives its own disposal attempt");
 });
 
-test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the official provider and proves child teardown", { timeout: 10000 }, async () => {
+test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the official workspace-write provider and proves child teardown", { timeout: 10000 }, async () => {
   const sourceWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-cancel-source-"));
   const candidateWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-cancel-candidate-"));
   const harness = await createAgentLoopHarness();
@@ -506,7 +506,7 @@ test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the off
     providerFiber = harness.ctx.plugin(codexProvider, {
       providerName: "codex",
       env: {},
-      permissionMode: "never",
+      permissionMode: "approve-for-me",
       disposeGraceMs: 3000,
     });
     await providerFiber;
@@ -537,7 +537,9 @@ test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the off
     assert.deepEqual(subprocess.state.threadStart, {
       cwd: realpathSync(candidateWorkspace),
       ephemeral: true,
-      approvalPolicy: "never",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      sandbox: "workspace-write",
     });
     assert.equal(subprocess.state.interrupts, 1, "the provider sends one best-effort turn interruption");
     assert.equal(subprocess.state.terminateCalls, 1, "the provider owns the managed child termination");

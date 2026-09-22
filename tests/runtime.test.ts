@@ -28,6 +28,15 @@ test("the native deterministic fixture rejects a loose repository or command pol
   writeFileSync(path.join(f.repo, "src/page.mjs"), "export const arbitrary = true;\n");
   assert.throws(() => assertPaginationFixturePolicy(f.policy), /FIXTURE_SOURCE_UNEXPECTED/);
 });
+test("trusted reviewer policy stores only a constrained credential reference", () => {
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const reviewer = { endpoint: "https://api.deepseek.com/chat/completions", model: "deepseek-review", credentialEnv: "DSH_DEVKIT_REVIEWER_API_KEY", timeoutMs: 45000 };
+  assert.deepEqual(validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", reviewer }).reviewer, reviewer);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", reviewer: { ...reviewer, credentialEnv: "PATH" } }), /INVALID_REVIEW_CREDENTIAL_ENV/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", reviewer: { ...reviewer, endpoint: "http://example.invalid/chat/completions" } }), /INVALID_REVIEW_ENDPOINT/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, reviewer }), /LIVE_REVIEWER_NOT_ALLOWED_IN_FIXTURE/);
+});
 test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
   const f = fixture();
   const runtime = new Devkit(f.policy, createPaginationFixtureAdapters());

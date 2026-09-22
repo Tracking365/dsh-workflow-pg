@@ -10,8 +10,11 @@ import { runCommand, type CommandConfinement, type CommandSpec } from "../adapte
 import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, exportPatch, writeArtifact, type Snapshot } from "../adapters/workspace.js";
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
 export interface RepositoryPolicy { path: string; allowedPaths: string[]; protectedPaths: string[] }
+/** Trusted host metadata only; the credential value remains outside JSON policy. */
+export interface ReviewerPolicy { endpoint: string; model: string; credentialEnv: string; timeoutMs?: number }
 export interface HostPolicy {
   dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
+  reviewer?: ReviewerPolicy;
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }

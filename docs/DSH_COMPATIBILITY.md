@@ -107,10 +107,12 @@ The second native ToolRuntime fixture mounts the actual published
 `@deepseek-ai/dsh-subagent-codex` plugin with the real `SubagentRuntime` and a deliberately
 throwing subprocess seam. It proves that the official provider registers as `codex` and that
 `devkit_doctor` observes its published capability shape, while asserting zero subprocess
-starts. Under the locked provider version, doctor also reads its declared `permissionMode`:
-only `never` and `approve-for-me` can construct the candidate executor;
-`dangerously-bypass-approvals-and-sandbox` and an unrecognized, missing, or unreadable mode are
-reported as blocked and cannot construct one. This is host-plane configuration enforcement, not an App
+starts. Under the locked provider version, doctor also reads its declared `permissionMode`,
+explicit provider env and metadata. Only `approve-for-me` with `env: {}` can construct the
+future candidate executor, because the same provider's wire fixture observes its explicit
+`sandbox: "workspace-write"` request. `never` remains visible but is not writer-eligible;
+`dangerously-bypass-approvals-and-sandbox`, unrecognized/missing/unreadable metadata, and a
+nonempty explicit env are blocked. This is host-plane configuration enforcement, not an App
 Server or model-session test and not an OS sandbox.
 
 `npm run test:codex-provider-profile` adds a profile-level counterpart. It packages the
@@ -155,10 +157,13 @@ that package-manager-only warning.
 ## Remaining compatibility gates
 
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
-registration, launcher lifecycle, declared permission-mode guard, official provider wire
+registration, launcher lifecycle, declared permission/environment guard, official provider wire
 cancellation, one real official-provider cwd/write behavior, and a standalone macOS Seatbelt
-command boundary are now covered. The latter has a host fixture proving candidate-only writes,
-configured protected-root read denial and no network, but is not yet composed around the
+command boundary are now covered. The wire fixture proves the locked provider maps
+`approve-for-me` to an explicit `sandbox: "workspace-write"`; native code requires that mode
+and an empty explicit provider env before it will construct a future writer. This is a provider
+protocol fact, not OS containment. The Seatbelt boundary has a host fixture proving candidate-only
+writes, configured protected-root read denial and no network, but is not yet composed around the
 official provider. The candidate-parent path has not run inside a deployed live task.
 Cancellation through an actual App Server process, provider-specific wire edge cases, an App
 Server sandbox composition, and a credential broker remain unverified.

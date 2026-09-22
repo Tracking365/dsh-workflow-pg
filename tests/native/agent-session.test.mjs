@@ -174,7 +174,7 @@ test("offline DSH AgentLoop fixture selects DevKit, renders its result, and pres
     const doctor = JSON.parse(rendered.content[0].text);
     assert.equal(doctor.executionMode, "disabled");
     assert.equal(doctor.live.reason, "LIVE_SANDBOX_NOT_IMPLEMENTED");
-    assert.deepEqual(doctor.nativeRuntime, { state: "supported", registry: "dsh-tools", fixtureMode: "disabled" });
+    assert.deepEqual(doctor.nativeRuntime, { state: "supported", registry: "dsh-tools", fixtureMode: "disabled", reviewer: { state: "unconfigured" } });
     assert.deepEqual(doctor.codexSubagent, { state: "unconfigured", reason: "DSH_SUBAGENT_SERVICE_MISSING" });
     const completedMessage = completedEvents.findLast((event) => event.type === "assistant/message");
     assert.deepEqual(completedMessage?.data.message.content, [{ type: "text", text: "Fixture session completed after devkit_doctor." }]);
