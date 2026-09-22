@@ -3,18 +3,59 @@ import { DevkitError } from "../contracts/task.js";
 import { minimalEnvironment, redact } from "../domain/security.js";
 
 export interface CommandSpec { readonly id: string; readonly command: string; readonly args: readonly string[]; readonly criteria: readonly string[]; readonly timeoutMs: number }
+/** A prepared wrapper for one trusted argv; it must never silently return the original argv after a failed confinement probe. */
+export interface PreparedCommandConfinement {
+  readonly argv: readonly string[];
+  readonly environment?: NodeJS.ProcessEnv;
+  /** Called only after the managed child has settled. */
+  dispose(): void;
+}
+/** Optional host-owned command boundary used by live execution profiles. */
+export interface CommandConfinement {
+  readonly id: string;
+  prepare(argv: readonly string[], cwd: string, signal: AbortSignal): Promise<PreparedCommandConfinement>;
+}
 export interface CommandResult {
   checkId: string; argv: string[]; exitCode: number | null; stdout: string; stderr: string;
   classification: "passed" | "failed_assertion" | "failed_infrastructure" | "cancelled";
   tests: number; stopped: boolean; timedOut: boolean; startedAt: string; finishedAt: string;
 }
+
+function disposePrepared(prepared: PreparedCommandConfinement | undefined): boolean {
+  try {
+    prepared?.dispose();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Trusted local fixture runner only: process groups are cancellation machinery, NOT a security sandbox. */
-export async function runCommand(spec: CommandSpec, cwd: string, signal: AbortSignal): Promise<CommandResult> {
+export async function runCommand(spec: CommandSpec, cwd: string, signal: AbortSignal, confinement?: CommandConfinement): Promise<CommandResult> {
   if (!spec.command || spec.command.includes("\0") || !Number.isFinite(spec.timeoutMs) || spec.timeoutMs <= 0) throw new DevkitError("INVALID_COMMAND_PLAN");
   const startedAt = new Date().toISOString();
   if (signal.aborted) throw new DevkitError("CANCELLED");
-  return new Promise((resolve) => {
-    const child = spawn(spec.command, [...spec.args], { cwd, env: minimalEnvironment(cwd), shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  const requestedArgv = [spec.command, ...spec.args];
+  const prepared = confinement === undefined ? undefined : await confinement.prepare(requestedArgv, cwd, signal);
+  if (signal.aborted) {
+    disposePrepared(prepared);
+    throw new DevkitError("CANCELLED");
+  }
+  const argv = prepared?.argv ?? requestedArgv;
+  const command = argv[0];
+  if (command === undefined) {
+    disposePrepared(prepared);
+    throw new DevkitError("INVALID_COMMAND_PLAN");
+  }
+  return new Promise((resolve, reject) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(command, argv.slice(1), { cwd, env: { ...minimalEnvironment(cwd), ...prepared?.environment }, shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+    } catch (error) {
+      disposePrepared(prepared);
+      reject(error);
+      return;
+    }
     let stdout = "", stderr = "", size = 0, overflow = false, timedOut = false, spawnError = false;
     const terminate = () => {
       try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); }
@@ -25,8 +66,8 @@ export async function runCommand(spec: CommandSpec, cwd: string, signal: AbortSi
       if (size > 131072) { overflow = true; terminate(); return; }
       if (target === "stdout") stdout += chunk.toString("utf8"); else stderr += chunk.toString("utf8");
     };
-    child.stdout.on("data", (chunk: Buffer) => collect("stdout", chunk));
-    child.stderr.on("data", (chunk: Buffer) => collect("stderr", chunk));
+    child.stdout?.on("data", (chunk: Buffer) => collect("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => collect("stderr", chunk));
     child.on("error", () => { spawnError = true; });
     const timer = setTimeout(() => { timedOut = true; terminate(); }, spec.timeoutMs);
     signal.addEventListener("abort", terminate, { once: true });
@@ -43,9 +84,10 @@ export async function runCommand(spec: CommandSpec, cwd: string, signal: AbortSi
       const failed = Number(/^# fail (\d+)\s*$/m.exec(stdout)?.[1] ?? 0);
       const skipped = Number(/^# skipped (\d+)\s*$/m.exec(stdout)?.[1] ?? 0);
       const todo = Number(/^# todo (\d+)\s*$/m.exec(stdout)?.[1] ?? 0);
-      const infrastructure = spawnError || overflow || timedOut || !stopped || tests === 0 || skipped > 0 || todo > 0;
+      const cleanupFailed = !disposePrepared(prepared);
+      const infrastructure = spawnError || overflow || timedOut || !stopped || cleanupFailed || tests === 0 || skipped > 0 || todo > 0;
       const classification = signal.aborted ? "cancelled" : infrastructure ? "failed_infrastructure" : exitCode === 0 && failed === 0 ? "passed" : exitCode !== 0 && failed > 0 && /ERR_ASSERTION/.test(stdout) ? "failed_assertion" : "failed_infrastructure";
-      resolve({ checkId: spec.id, argv: [spec.command, ...spec.args], exitCode, stdout: redact(stdout), stderr: redact(stderr), classification, tests, stopped, timedOut, startedAt, finishedAt: new Date().toISOString() });
+      resolve({ checkId: spec.id, argv: requestedArgv, exitCode, stdout: redact(stdout), stderr: redact(stderr), classification, tests, stopped, timedOut, startedAt, finishedAt: new Date().toISOString() });
     });
   });
 }

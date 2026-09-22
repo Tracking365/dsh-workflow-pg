@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git } from "../src/index.js";
+import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git, MacosSeatbeltCommandConfinement, seatbeltProfile } from "../src/index.js";
 import { input, fixture, fixed, broken, adapters, finding, runCase } from "./helpers.js";
 
 test("strict contracts reject nested unknowns, duplicate ids and model permissions", () => {
@@ -79,6 +79,28 @@ test("path checks reject traversal, prefix collisions, Windows paths and symlink
   const f = fixture(); for (const value of ["../repo2/file", "/etc/passwd", "C:\\secret", "C:secret", "\\\\host\\share", "src\\..\\file"]) assert.throws(() => resolveWithin(f.repo, value), /PATH_OUTSIDE/);
   symlinkSync(f.root, path.join(f.repo, "escape")); assert.throws(() => resolveRealWithin(f.repo, "escape/new-file"), /SYMLINK/);
   symlinkSync(path.join(f.root, "missing"), path.join(f.repo, "dangling")); assert.throws(() => resolveRealWithin(f.repo, "dangling/new"), /SYMLINK/);
+});
+test("Seatbelt command confinement builds a narrow profile and never falls back when its runner is unavailable", async () => {
+  const f = fixture();
+  const protectedRoot = path.join(f.root, "protected");
+  mkdirSync(protectedRoot);
+  const profile = seatbeltProfile({ writableRoots: [f.repo], deniedReadRoots: [protectedRoot] });
+  assert.match(profile, /\(deny file-write\*\)/);
+  assert.match(profile, /\(deny file-read\*/);
+  assert.match(profile, /\(deny network\*\)/);
+  assert.throws(() => seatbeltProfile({ writableRoots: [f.repo], deniedReadRoots: [f.root] }), /SANDBOX_ROOTS_OVERLAP/);
+
+  const unavailable = new MacosSeatbeltCommandConfinement({
+    deniedReadRoots: [protectedRoot],
+    sandboxExec: path.join(f.root, "missing-sandbox-exec"),
+  });
+  const status = await unavailable.status();
+  assert.deepEqual(status, {
+    state: "unsupported", mechanism: "macos-seatbelt", platform: process.platform,
+    enforcement: "none", filesystem: "none", network: "none", credentialReads: "none",
+    reason: process.platform === "darwin" ? "SANDBOX_EXEC_UNAVAILABLE" : "MACOS_SEATBELT_REQUIRES_DARWIN",
+  });
+  await assert.rejects(unavailable.prepare([process.execPath, "--version"], f.repo, new AbortController().signal), /SANDBOX_UNAVAILABLE/);
 });
 test("snapshots cover untracked binary content, executable mode and policy changes", () => {
   const f = fixture(), a = snapshot(f.repo, "base", "policy", "plan"); writeFileSync(path.join(f.repo, "src/binary"), Buffer.from([0, 255, 1]));
@@ -166,6 +188,45 @@ test("command runner preserves argv and filters inherited credentials", async ()
   const r = await runCommand({ id: "argv", command: process.execPath, args: ["-e", "console.log(JSON.stringify({arg:process.argv[1],secret:process.env.DEVKIT_TEST_SECRET}))", "hello;touch /tmp/no-such-marker"], criteria: [], timeoutMs: 3000 }, f.repo, new AbortController().signal);
   assert.match(r.stdout, /hello;touch/); assert.doesNotMatch(r.stdout, /sensitive/); delete process.env.DEVKIT_TEST_SECRET;
   assert.equal(minimalEnvironment(f.repo).NODE_OPTIONS, undefined); assert.match(redact("api_key=sk-abcdefghijk"), /REDACTED/);
+});
+test("command runner uses a host-prepared confinement and disposes it after process settlement", async () => {
+  const f = fixture();
+  writeFileSync(path.join(f.repo, "test", "confined.mjs"), "import test from 'node:test'; import assert from 'node:assert/strict'; test('host environment',()=>assert.equal(process.env.DEVKIT_CONFINED,'yes'));\n");
+  let observed: { argv: readonly string[]; cwd: string } | undefined;
+  let disposals = 0;
+  const result = await runCommand({
+    id: "confined", command: process.execPath, args: ["--test", "--test-reporter=tap", "test/confined.mjs"], criteria: ["A1"], timeoutMs: 3000,
+  }, f.repo, new AbortController().signal, {
+    id: "host-test-confinement",
+    async prepare(argv, cwd) {
+      observed = { argv, cwd };
+      return { argv, environment: { DEVKIT_CONFINED: "yes" }, dispose() { disposals += 1; } };
+    },
+  });
+  assert.equal(result.classification, "passed");
+  assert.deepEqual(observed, { argv: [process.execPath, "--test", "--test-reporter=tap", "test/confined.mjs"], cwd: f.repo });
+  assert.equal(disposals, 1);
+});
+test("command runner disposes a prepared confinement if setup stops before a child can settle", async () => {
+  const f = fixture();
+  const spec = { id: "cleanup", command: process.execPath, args: ["--version"], criteria: [], timeoutMs: 3000 };
+  const controller = new AbortController();
+  let abortedDisposals = 0;
+  await assert.rejects(runCommand(spec, f.repo, controller.signal, {
+    id: "abort-during-prepare",
+    async prepare(argv) {
+      controller.abort();
+      return { argv, dispose() { abortedDisposals += 1; } };
+    },
+  }), /CANCELLED/);
+  assert.equal(abortedDisposals, 1);
+
+  let spawnDisposals = 0;
+  await assert.rejects(runCommand(spec, "\0invalid-cwd", new AbortController().signal, {
+    id: "spawn-error",
+    async prepare(argv) { return { argv, dispose() { spawnDisposals += 1; } }; },
+  }));
+  assert.equal(spawnDisposals, 1);
 });
 test("long-running command cancellation waits for process group settlement", async () => {
   const f = fixture(), controller = new AbortController(); const pending = runCommand({ id: "long", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"], criteria: [], timeoutMs: 5000 }, f.repo, controller.signal); setTimeout(() => controller.abort(), 100);

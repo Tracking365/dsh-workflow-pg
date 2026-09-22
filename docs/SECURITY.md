@@ -48,6 +48,15 @@ uses explicit HTTPS configuration and a separate credential callback, rejects re
 checks response shape/model identity, and rejects known credential patterns in context.
 Regex redaction is best-effort, not a complete secret detector. Do not pass real secrets.
 
+`MacosSeatbeltCommandConfinement` is an optional host-owned boundary for trusted command
+plans. It first creates a disposable probe that must prove a candidate write succeeds while a
+control write, a configured protected-root read, and loopback network access fail. Only after
+that proof does it wrap a command in `sandbox-exec`: writes are limited to the candidate and a
+private temporary directory, protected roots are unreadable, and all network access is denied.
+It has no unconfined fallback and `runCommand()` disposes the private temporary root after the
+managed child settles. This is real macOS Seatbelt evidence for that command path, not a claim
+about every host or the Codex App Server. Protected-root denial is not a credential broker.
+
 The dormant DSH Codex bridge delegates only through the official `subagents` registry; it
 does not invoke a Codex CLI or HTTP endpoint itself. Its candidate-session composition layer
 canonicalizes the already-created DevKit workspace, creates a short-lived DSH Agent at that
@@ -76,10 +85,11 @@ capabilities, binding to operator identity and expiration remain unimplemented.
   provider’s deliberately rejecting subprocess seam receives that canonical cwd. An in-memory
   JSON-RPC peer also proves the official provider sends an interrupt and waits for managed
   teardown after a published-turn cancellation. One separately authorized temporary run started
-  an App Server and observed that cwd and a single exact scoped write. None of this proves
-  filesystem containment, network-egress enforcement, credential non-disclosure, approval
-  behavior, or cancellation of a real App Server process. There is no verified OS sandbox,
-  credential broker, or readonly tool-using reviewer; live runs remain blocked.
+  an App Server and observed that cwd and a single exact scoped write. A separate host-level
+  Seatbelt fixture proves a reusable command wrapper can deny configured reads, external writes
+  and network. It does not yet wrap the App Server, supply an isolated model credential, or
+  prove App Server cancellation. There is no credential broker or readonly tool-using reviewer;
+  live runs remain blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.

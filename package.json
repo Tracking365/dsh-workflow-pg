@@ -32,7 +32,8 @@
     "prepack": "npm run build",
     "test:pack": "node scripts/check-pack.mjs",
     "test:launcher": "npm run build && node scripts/test-dsh-launcher.mjs",
-    "test:codex-provider-profile": "node scripts/test-codex-provider-profile.mjs"
+    "test:codex-provider-profile": "node scripts/test-codex-provider-profile.mjs",
+    "test:seatbelt-host": "npm run build && DSH_DEVKIT_REQUIRE_SEATBELT=1 node --test tests/native/seatbelt-host.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.3",

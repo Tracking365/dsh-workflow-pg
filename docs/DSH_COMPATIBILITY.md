@@ -156,10 +156,12 @@ that package-manager-only warning.
 
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
 registration, launcher lifecycle, declared permission-mode guard, official provider wire
-cancellation, and one real official-provider cwd/write behavior are now covered. The
-candidate-parent path has not run inside a deployed live task. Cancellation through an actual
-App Server process, provider-specific wire edge cases, and an enforceable
-filesystem/network/credential sandbox remain unverified.
+cancellation, one real official-provider cwd/write behavior, and a standalone macOS Seatbelt
+command boundary are now covered. The latter has a host fixture proving candidate-only writes,
+configured protected-root read denial and no network, but is not yet composed around the
+official provider. The candidate-parent path has not run inside a deployed live task.
+Cancellation through an actual App Server process, provider-specific wire edge cases, an App
+Server sandbox composition, and a credential broker remain unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
 the live gate.
@@ -172,7 +174,7 @@ pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
 `npm test`, `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
-`npm run test:codex-provider-profile` all passed on 2026-09-22. The launcher and
+`npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` all passed on 2026-09-22. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized
 current-login invocation.

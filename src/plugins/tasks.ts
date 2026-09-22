@@ -6,7 +6,7 @@ import { validateHostPolicy } from "../contracts/policy.js";
 import { evidenceGate, type CheckEvidence } from "../domain/state-machine.js";
 import { resolveRealWithin, redact } from "../domain/security.js";
 import { TaskStore } from "../adapters/store.js";
-import { runCommand, type CommandSpec } from "../adapters/process.js";
+import { runCommand, type CommandConfinement, type CommandSpec } from "../adapters/process.js";
 import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, exportPatch, writeArtifact, type Snapshot } from "../adapters/workspace.js";
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
 export interface RepositoryPolicy { path: string; allowedPaths: string[]; protectedPaths: string[] }
@@ -24,6 +24,8 @@ export interface ExecutionResult { readonly stopped: boolean; readonly runId?: s
 export interface CodeExecutor { readonly family: string; readonly kind: "fixture" | "live"; execute(request: ExecutionRequest): Promise<ExecutionResult> }
 export interface RuntimeAdapters {
   executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean>;
+  /** Host-owned command boundary; a missing confinement must not be treated as a live sandbox. */
+  commandConfinement?: CommandConfinement;
   /** Trusted host-only guard run before any fixture verification command. */
   workspaceGuard?: { readonly id: string; assertWorkspace(workspace: string): void };
 }
@@ -117,7 +119,7 @@ export class Devkit {
       stage("reproduce");
       let reproduced = false;
       for (const check of checks) {
-        const result = await runCommand(check, work, signal); stopped = result.stopped;
+        const result = await runCommand(check, work, signal, this.adapters.commandConfinement); stopped = result.stopped;
         set({}, "reproduction", { ...result, snapshotId: baseline.id });
         if (capture().id !== baseline.id) throw new DevkitError("REPRODUCTION_MUTATED_SOURCE");
         if (!stopped) throw new DevkitError("STOP_UNCONFIRMED");
@@ -150,7 +152,7 @@ export class Devkit {
         const evidence: CheckEvidence[] = []; let failed = false;
         for (const check of checks) {
           if (capture().id !== candidate.id) throw new DevkitError("STALE_SNAPSHOT");
-          const result = await runCommand(check, work, signal); stopped = result.stopped;
+          const result = await runCommand(check, work, signal, this.adapters.commandConfinement); stopped = result.stopped;
           set({}, "verification", { ...result, snapshotId: candidate.id, criteria: check.criteria });
           if (capture().id !== candidate.id) throw new DevkitError("VERIFICATION_MUTATED_SOURCE");
           if (!stopped) throw new DevkitError("STOP_UNCONFIRMED");

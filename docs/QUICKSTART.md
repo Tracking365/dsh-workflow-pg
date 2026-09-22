@@ -12,11 +12,19 @@ npm run check
 npm test
 npm run demo
 npm run test:pack
+npm run test:seatbelt-host
 ```
 
 Demo prints a temporary report/patch path and `realModelsUsed:false`. Read those artifacts;
 `awaiting_human/final_acceptance` is not completed or deployed. Temporary directories are
 kept for inspection. No model credentials are required and none are probed automatically.
+
+`test:seatbelt-host` is a macOS host-capability gate, not a model test. It requires a usable
+`/usr/bin/sandbox-exec` and uses only disposable directories: candidate writes must work while
+control writes, reads from a synthetic protected directory, and loopback network access are
+denied. A constrained nested environment can legitimately fail this gate; DevKit treats that as
+unsupported rather than falling back to an unrestricted command. This boundary is not yet wired
+to a live Codex App Server and does not replace a credential broker.
 
 ## Evaluate the DSH control plane (headless launcher gate verified)
 

@@ -3,7 +3,7 @@
 基于 DeepSeek Harness 的研发辅助插件，按既有 `dsh-devkit-handoff/` 计划迭代。
 
 **当前是首个可运行的控制面与 Bug 修复 fixture 增量，不是 M0–M3 全部完成，更不是生产自动修复系统。**
-真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。另有测试专用离线 `LlmAdapter` 驱动真实 DSH AgentLoop，已验证会话内的工具选择、渲染结果回传和取消后的文本保留；它不含端点、凭据或网络代码。候选工作副本专用的短生命周期 DSH 父会话也已在真实 AgentLoop/Session 夹具中组成，并证明官方 provider 的拒绝式 subprocess seam 收到该候选目录。官方 provider 的本地 JSON-RPC 取消夹具还验证了已发布 turn 的 interrupt、受管进程终止确认和候选父会话释放。2026-09-22 在一次明确授权、非 CI 的临时 Git fixture 中，官方 App Server 以当前登录态实际运行 1 次：`permissionMode: "never"`、显式 `env: {}`、无 full-access；观察到其 cwd 与候选目录一致并生成精确 proof。它不证明 OS 级文件/网络/凭据隔离或真实 App Server 的取消边界，原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
+真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。另有测试专用离线 `LlmAdapter` 驱动真实 DSH AgentLoop，已验证会话内的工具选择、渲染结果回传和取消后的文本保留；它不含端点、凭据或网络代码。候选工作副本专用的短生命周期 DSH 父会话也已在真实 AgentLoop/Session 夹具中组成，并证明官方 provider 的拒绝式 subprocess seam 收到该候选目录。官方 provider 的本地 JSON-RPC 取消夹具还验证了已发布 turn 的 interrupt、受管进程终止确认和候选父会话释放。新增的 macOS Seatbelt 命令适配器会先实际探测 runner，再限制写入到候选/私有临时目录、拒绝指定受保护根的读取并拒绝网络；宿主级 fixture 已验证这些边界，但它尚未包裹 App Server 或构成凭据 broker。2026-09-22 在一次明确授权、非 CI 的临时 Git fixture 中，官方 App Server 以当前登录态实际运行 1 次：`permissionMode: "never"`、显式 `env: {}`、无 full-access；观察到其 cwd 与候选目录一致并生成精确 proof。它不证明 App Server 的 OS 级文件/网络/凭据隔离或真实取消边界，原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
 
 ## 已实现
 
@@ -23,9 +23,10 @@ npm run demo
 npm run test:pack
 npm run test:launcher
 npm run test:codex-provider-profile
+npm run test:seatbelt-host
 ```
 
-`demo` 只对新建临时仓库工作，作者与审核均为显式 fixture；真实运行 Git、Node 回归测试并输出 patch/report 路径。`npm test` 还会经过真实 Cordis/DSH ToolRuntime 跑完 `pagination-v1` 的 create → run → status → report → cancel/resume 边界，并以真实 AgentLoop/官方 provider 的拒绝式 subprocess seam 覆盖候选会话 cwd 传递；该 seam 不会执行进程。上述自动化命令不会修改此插件仓库或你的业务仓库，不调用付费模型、不推送、不合并。`test:launcher` 是较慢的隔离 DSH profile gate：它不传任务文本，因而不调用模型。`test:codex-provider-profile` 只安装官方 Codex provider 并启动隔离 profile；它不调用 `subagents.start`，因而不会启动 Codex App Server。
+`demo` 只对新建临时仓库工作，作者与审核均为显式 fixture；真实运行 Git、Node 回归测试并输出 patch/report 路径。`npm test` 还会经过真实 Cordis/DSH ToolRuntime 跑完 `pagination-v1` 的 create → run → status → report → cancel/resume 边界，并以真实 AgentLoop/官方 provider 的拒绝式 subprocess seam 覆盖候选会话 cwd 传递；该 seam 不会执行进程。`test:seatbelt-host` 是一项宿主能力门：它要求 Seatbelt 可用，并在临时目录中证明允许候选写入、拒绝控制目录写入和指定凭据目录读取、拒绝回环网络；在无法嵌套 Seatbelt 的受限环境中，普通 `npm test` 只验证其会 fail-closed。上述自动化命令不会修改此插件仓库或你的业务仓库，不调用付费模型、不推送、不合并。`test:launcher` 是较慢的隔离 DSH profile gate：它不传任务文本，因而不调用模型。`test:codex-provider-profile` 只安装官方 Codex provider 并启动隔离 profile；它不调用 `subagents.start`，因而不会启动 Codex App Server。
 
 打包导入测试不等于 DSH 原生分派测试。实际证据与环境差异见 [TEST_REPORT](docs/TEST_REPORT.md)。
 
@@ -57,4 +58,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消与一次真实 App Server fixture 已有证据；下一步是先实现并验证 OS 级文件/网络/凭据能力强制，再覆盖真实 App Server 的取消边界。随后接入独立真实审核、完成安全恢复与审批凭据。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、一个可复用的 macOS 命令隔离器与一次真实 App Server fixture 已有证据；下一步是将隔离器和独立凭据 broker 接入 App Server，再覆盖真实 App Server 的取消边界。随后接入独立真实审核、完成安全恢复与审批凭据。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
