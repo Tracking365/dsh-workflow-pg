@@ -1,6 +1,6 @@
 # Implementation status
 
-2026-09-20. First implementation increment on the existing TypeScript scaffold.
+2026-09-22. First implementation increment on the existing TypeScript scaffold.
 
 | Milestone | Status | Evidence / remaining work |
 |---|---|---|

@@ -13,7 +13,7 @@ TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任
 
 ## 本地验证
 
-使用 Node >=22.13（内置 `node:sqlite`；测试环境为 Linux / Node 22.16.0）。
+使用 Node >=22.13（内置 `node:sqlite`；最新干净锁文件验证见 [TEST_REPORT](docs/TEST_REPORT.md)）。
 
 ```sh
 npm ci

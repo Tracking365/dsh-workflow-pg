@@ -7,6 +7,23 @@ import { assertTransition } from "../domain/state-machine.js";
 
 type Patch = Partial<Pick<TaskRecord, "status" | "stage" | "retryCount" | "readyForAcceptance" | "reason" | "workspace" | "baseCommit" | "snapshotId" | "runId">>;
 export interface TaskEvent { seq: number; type: string; time: string; payload: unknown }
+
+function sqlRow(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("STORE_CORRUPT");
+  return value as Record<string, unknown>;
+}
+function textColumn(value: unknown): string {
+  if (typeof value !== "string") throw new DevkitError("STORE_CORRUPT");
+  return value;
+}
+function numberColumn(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new DevkitError("STORE_CORRUPT");
+  return value;
+}
+function parseRecord(value: unknown): TaskRecord {
+  try { return JSON.parse(textColumn(value)) as TaskRecord; }
+  catch { throw new DevkitError("STORE_CORRUPT"); }
+}
 export class TaskStore {
   private readonly db: DatabaseSync;
   constructor(readonly filename: string) {
@@ -17,7 +34,7 @@ export class TaskStore {
     chmodSync(filename, 0o600);
     try {
       this.db.exec("PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON;");
-      const version = Number(this.db.prepare("PRAGMA user_version").get()?.user_version);
+      const version = numberColumn(sqlRow(this.db.prepare("PRAGMA user_version").get()).user_version);
       if (version !== 0 && version !== 1) throw new DevkitError("STORE_SCHEMA_UNSUPPORTED");
       if (version === 0) {
         const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
@@ -46,7 +63,7 @@ export class TaskStore {
       if (input.idempotencyKey) {
         const row = this.db.prepare("SELECT record FROM tasks WHERE idempotency_key=?").get(input.idempotencyKey);
         if (row) {
-          const existing = JSON.parse(String(row.record)) as TaskRecord;
+          const existing = parseRecord(sqlRow(row).record);
           if (existing.inputHash !== inputHash || existing.policyHash !== policyHash) throw new DevkitError("IDEMPOTENCY_CONFLICT");
           return existing;
         }
@@ -61,7 +78,7 @@ export class TaskStore {
   get(id: string): TaskRecord {
     const row = this.db.prepare("SELECT record FROM tasks WHERE id=?").get(id);
     if (!row) throw new DevkitError("TASK_NOT_FOUND");
-    return JSON.parse(String(row.record)) as TaskRecord;
+    return parseRecord(sqlRow(row).record);
   }
   private event(id: string, type: string, payload: unknown): void {
     this.db.prepare("INSERT INTO events(task_id,type,time,payload) VALUES(?,?,?,?)").run(id, type, new Date().toISOString(), JSON.stringify(payload));
@@ -92,7 +109,13 @@ export class TaskStore {
   hasLease(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM leases WHERE task_id=?").get(id); }
   history(id: string): TaskEvent[] {
     this.get(id);
-    return this.db.prepare("SELECT seq,type,time,payload FROM events WHERE task_id=? ORDER BY seq").all(id).map((row) => ({ seq: Number(row.seq), type: String(row.type), time: String(row.time), payload: JSON.parse(String(row.payload)) as unknown }));
+    return this.db.prepare("SELECT seq,type,time,payload FROM events WHERE task_id=? ORDER BY seq").all(id).map((value) => {
+      const entry = sqlRow(value);
+      let payload: unknown;
+      try { payload = JSON.parse(textColumn(entry.payload)); }
+      catch { throw new DevkitError("STORE_CORRUPT"); }
+      return { seq: numberColumn(entry.seq), type: textColumn(entry.type), time: textColumn(entry.time), payload };
+    });
   }
   close(): void { this.db.close(); }
 }

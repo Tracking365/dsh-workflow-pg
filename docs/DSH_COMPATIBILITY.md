@@ -36,7 +36,7 @@ the exact runtime commit and results. Until then A03 and native parts of A02/A04
 ## Toolchain decision
 
 Node >=22.13 is required for built-in SQLite. TypeScript 5.7.2 and @types/node 22.10.2 remain
-pinned from the original repository; unused tsx/esbuild tooling was removed because tests
-run compiled JS. Package-lock retains the original integrity values for the three remaining
-packages. This sandbox used global TypeScript 5.8.3 and @types/node 25.1.0; exact locked npm
-installation could not be exercised offline and must be rerun in the target environment.
+pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. A clean isolated
+worktree ran `npm ci`, `npm run check`, `npm test`, `npm run demo`, and `npm run test:pack` on
+2026-09-22 with those exact locked packages. This verifies the package toolchain, not a DSH
+runtime integration.

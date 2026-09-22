@@ -49,7 +49,8 @@ capabilities, binding to operator identity and expiration remain unimplemented.
   explicit stub; independent production evidence adjudication remains to be built.
 * Review context currently includes task, patch and test evidence, not a complete bounded
   project-context retriever. Large repositories are rejected, not silently truncated.
-* Process termination is tested on Linux only. Windows/macOS live behavior is unverified.
+* Process cancellation is exercised by the fixture on macOS. Windows behavior and all live
+  execution behavior remain unverified; fixture process groups are not an OS sandbox.
 
 Shutdown aborts and awaits owned cooperative work. A non-cooperative adapter can still hang;
 production needs an independently killable sandbox. Persistent artifacts are never deleted

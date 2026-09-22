@@ -38,6 +38,12 @@ test("unsupported migrations and corrupt stores preserve original bytes", () => 
   const before = readFileSync(name); assert.throws(() => new TaskStore(name), /STORE_SCHEMA_UNSUPPORTED/); assert.deepEqual(readFileSync(name), before);
   writeFileSync(name, "not a database"); assert.throws(() => new TaskStore(name)); assert.equal(readFileSync(name, "utf8"), "not a database");
 });
+test("malformed persisted rows fail closed instead of bypassing SQLite unknown types", () => {
+  const f = fixture(), name = path.join(f.data, "tasks.sqlite"), store = new TaskStore(name), task = store.create(validateTaskInput(input), "policy");
+  store.close();
+  const db = new DatabaseSync(name); db.prepare("UPDATE tasks SET record=? WHERE id=?").run("not-json", task.taskId); db.close();
+  const reopened = new TaskStore(name); try { assert.throws(() => reopened.get(task.taskId), /STORE_CORRUPT/); } finally { reopened.close(); }
+});
 test("path checks reject traversal, prefix collisions, Windows paths and symlink parents", () => {
   const f = fixture(); for (const value of ["../repo2/file", "/etc/passwd", "C:\\secret", "C:secret", "\\\\host\\share", "src\\..\\file"]) assert.throws(() => resolveWithin(f.repo, value), /PATH_OUTSIDE/);
   symlinkSync(f.root, path.join(f.repo, "escape")); assert.throws(() => resolveRealWithin(f.repo, "escape/new-file"), /SYMLINK/);

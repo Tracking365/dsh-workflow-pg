@@ -2,7 +2,9 @@
 
 ## Run the implemented fixture
 
-Node >=22.13 and Git are required; current fixture guard permits Linux only.
+Node >=22.13 and Git are required. Fixture mode is an explicitly configured local test
+harness, not an OS sandbox; the latest clean verification ran on macOS. Windows behavior
+remains unverified.
 
 ```sh
 npm ci

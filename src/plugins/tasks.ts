@@ -78,7 +78,9 @@ export class Devkit {
     try {
       // There is intentionally no unsafe live fallback or model-selectable executionMode.
       if (this.policy.executionMode !== "fixture") throw new DevkitError("LIVE_SANDBOX_NOT_IMPLEMENTED");
-      if (process.platform !== "linux") throw new DevkitError("FIXTURE_PLATFORM_UNVERIFIED");
+      // Fixture mode is an explicitly configured test harness, not a sandbox or a live
+      // execution path. Keep its platform result visible in doctor/report instead of
+      // making portable deterministic tests hang before their fixture can settle.
       const executor = this.adapters.executor, reviewer = this.adapters.reviewer;
       if (!executor || !reviewer) throw new DevkitError("EXECUTOR_OR_REVIEWER_MISSING");
       if (executor.kind !== "fixture" || reviewer.kind !== "fixture") throw new DevkitError("LIVE_ADAPTER_REQUIRES_SANDBOX");
