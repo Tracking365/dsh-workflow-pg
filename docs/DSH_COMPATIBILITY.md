@@ -1,8 +1,10 @@
-# DSH compatibility — ToolRuntime, offline AgentLoop, candidate session, launcher, and Codex provider fixtures verified
+# DSH compatibility — ToolRuntime, offline AgentLoop, candidate session, launcher, and one authorized Codex fixture
 
 Checked 2026-09-22 against official source/documentation and the installed, exact npm packages.
-The fixtures deliberately do not access a user credential or remote model. One test-only,
-in-process adapter supplies fixed stream chunks to the real DSH AgentLoop.
+The repeatable fixtures deliberately do not access a user credential or remote model. One
+test-only, in-process adapter supplies fixed stream chunks to the real DSH AgentLoop. A
+separate user-authorized, non-CI temporary fixture used the current Codex login once; its
+narrow evidence and limits are recorded below.
 
 Sources:
 
@@ -107,9 +109,20 @@ launch its package-local Codex App Server. Its temporary npm cache avoids readin
 the user's shared npm cache.
 
 The workspace guard is necessary because the official provider starts a child in
-`parent.session.header.cwd` and exposes no public per-run cwd option. DevKit's composition
+`parent.session.header.cwd` and exposes no public per-run cwd option. DevKit’s composition
 layer therefore creates a canonical candidate-bound parent and the lower bridge rechecks that
 directory before delegation; a prompt instruction cannot substitute for this boundary.
+
+A separate one-shot fixture then exercised that path with the real published provider and
+`LocalSubprocessRuntime`. The source parent and the candidate were different disposable
+temporary directories; the fixture recorded exactly one provider spawn and its cwd exactly
+equaled the canonical candidate directory. The provider ran with `permissionMode: "never"`
+and `env: {}`, without setting a model or a full-access mode. It completed, disposed the child
+and candidate parent cleanly, left `README.md` unchanged, created only
+`codex-live-proof.txt`, and that file had the exact expected content. The runner did not inject
+or inspect credentials; the authorized App Server used the existing login state. This is a
+manual behavior check, not a repeatable CI test, a deployed DevKit task, or evidence of OS
+filesystem/network/credential isolation.
 
 `npm run test:launcher` adds a second, intentionally slow gate. It creates a new temporary
 `DSH_HOME`, initializes a headless profile, packages the current checkout, installs that
@@ -130,10 +143,10 @@ that package-manager-only warning.
 ## Remaining compatibility gates
 
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
-registration, and launcher lifecycle are now covered. No official Codex App Server process,
-remote model request or credential has been started, and the candidate-parent path has not run
-inside a deployed live task. Cancellation through an actual provider process, provider-specific
-wire behavior, and an enforceable filesystem/network/credential sandbox remain unverified.
+registration, launcher lifecycle, and one real official-provider cwd/write behavior are now
+covered. The candidate-parent path has not run inside a deployed live task. Cancellation
+through an actual provider process, provider-specific wire edge cases, and an enforceable
+filesystem/network/credential sandbox remain unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
 the live gate.
@@ -148,4 +161,5 @@ root peer produced by Cordis 4.0.2. `npm run check`,
 `npm test`, `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile` all passed on 2026-09-22. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
-credentialed model interaction.
+credentialed model interaction; the separate manual fixture above is the sole authorized
+current-login invocation.

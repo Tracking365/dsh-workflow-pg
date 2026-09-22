@@ -24,6 +24,14 @@ session can select and render `devkit_doctor` and exercise cancellation. It has 
 endpoint, credential lookup, subprocess or network implementation, and is not packaged as a
 runtime provider. It is compatibility evidence only; it cannot authorize live execution.
 
+On 2026-09-22, one separately authorized, non-CI run started the official Codex App Server
+from a disposable temporary Git candidate. It used the current login state with
+`permissionMode: "never"` and an empty explicit provider environment; no full-access mode,
+repository remote, task credential, push, merge, or deployment was configured. The host
+observed one subprocess with the exact candidate cwd, a clean provider/parent teardown, and
+only the expected proof file. This is a narrow behavior observation, not a sandbox claim or
+an authorization to enable native live execution.
+
 ## Implemented controls
 
 Task inputs cannot set host policy, arbitrary commands, output paths, approval or readiness.
@@ -62,10 +70,12 @@ capabilities, binding to operator identity and expiration remain unimplemented.
 ## Explicit gaps / do not relax these to make tests pass
 
 * Native fixtures compose a real candidate-bound DSH parent and confirm that the official
-  provider's deliberately rejecting subprocess seam receives that canonical cwd. They do not
-  start an App Server or prove its filesystem, network, credential, approval or cancellation
-  behavior. There is no verified OS sandbox, network egress enforcement, credential broker or
-  readonly tool-using reviewer; live runs remain blocked.
+  provider’s deliberately rejecting subprocess seam receives that canonical cwd. One
+  separately authorized temporary run also started an App Server and observed that cwd and a
+  single exact scoped write. It does not prove filesystem containment, network-egress
+  enforcement, credential non-disclosure, approval behavior, or cancellation. There is no
+  verified OS sandbox, credential broker, or readonly tool-using reviewer; live runs remain
+  blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.
