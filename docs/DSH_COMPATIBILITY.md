@@ -201,14 +201,17 @@ The published registry, offline agent-session tool flow, candidate-parent compos
 registration, launcher lifecycle, declared permission/environment guard, official provider wire
 cancellation, one real official-provider cwd/write behavior, a standalone macOS Seatbelt command
 boundary, an App-Server-shaped Seatbelt launch boundary, and a synthetic direct App Server
-client and loopback approval presentation are now covered. The direct client proves the documented handshake, candidate-only
+client plus loopback approval/recovery presentations are now covered. The direct client proves the documented handshake, candidate-only
 `workspaceWrite`/restricted-read/network-off turn policy, task/thread/turn approval binding,
 ephemeral-thread enforcement, notification binding, allowed file-change scope, default deny
 behavior, cancellation and exit-proof release. It has no native live wiring, credential,
-endpoint or model call. The local presentation is now mounted by an explicit disabled native
+endpoint or model call. The approval presentation is mounted only by an explicit disabled native
 policy configuration: a synthetic host-secret test authenticates its loopback session, confirms
 the doctor-reported listener closes at plugin unload, and proves missing secrets reject mounting.
-It is still not connected to a direct-client executor. The wire fixture
+The separately configured recovery presentation uses the same local boundary but exposes no
+task recovery tool; it binds a one-time assertion to an interrupted retained run and can only
+queue a fresh clone after reinspection. Neither page is connected to a direct-client executor.
+The wire fixture
 proves the locked provider maps `approve-for-me` to an explicit `sandbox: "workspace-write"`;
 native code reports that mode and an empty explicit provider env as protocol eligibility only;
 the missing credential broker and authenticated approval bridge keep executor launch disabled.
@@ -232,7 +235,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (92 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (100 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

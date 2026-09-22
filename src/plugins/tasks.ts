@@ -36,11 +36,19 @@ export interface CodexApprovalControlPlanePolicy {
   operatorId: string;
   port?: number;
 }
+/** Host-only configuration for a separate retained-run recovery presentation. */
+export interface RecoveryControlPlanePolicy {
+  mode: "loopback-v1";
+  credentialEnv: string;
+  operatorId: string;
+  port?: number;
+}
 export interface HostPolicy {
   dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
   reviewer?: ReviewerPolicy;
   codexAppServer?: CodexAppServerPolicy;
   codexApprovalControlPlane?: CodexApprovalControlPlanePolicy;
+  recoveryControlPlane?: RecoveryControlPlanePolicy;
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }
@@ -80,9 +88,9 @@ export interface RecoveryAuthorization {
   readonly oldWriterStopped: true;
 }
 /**
- * Integrate an authenticated operator control plane here. A plain callback is
- * a test seam, not an identity system; native DSH wiring deliberately leaves
- * it unconfigured until such a control plane exists.
+ * A plain callback remains a test seam, not an identity system. Native DSH
+ * configures this only through the explicit, host-secret loopback recovery
+ * presentation; it is deliberately absent from the task-tool surface.
  */
 export interface RecoveryAuthority {
   authorizeRecovery(inspection: RecoveryInspection): Promise<unknown>;
@@ -105,6 +113,7 @@ export class Devkit {
   private readonly policyHash: string;
   private readonly contexts: ContextStore;
   private readonly active = new Map<string, ActiveRun>();
+  private readonly recovering = new Set<string>();
   private closing = false;
   constructor(policy: HostPolicy, private readonly adapters: RuntimeAdapters = {}) {
     policy = validateHostPolicy(policy);
@@ -152,7 +161,8 @@ export class Devkit {
         ? { state: "enabled", driver: this.policy.fixtureDriver, deterministic: true, nonProduction: true }
         : { state: "disabled" },
       executor: this.adapters.executor ? { family: this.adapters.executor.family, kind: this.adapters.executor.kind } : { state: "unconfigured" },
-      reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" } };
+      reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" },
+      recovery: this.adapters.recoveryAuthority ? { state: "configured", authority: "host-only" } : { state: "unconfigured" } };
   }
   async run(id: string, signal: AbortSignal = new AbortController().signal, executorOverride?: CodeExecutor): Promise<TaskRecord> {
     if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
@@ -415,24 +425,31 @@ export class Devkit {
    */
   async recover(id: string): Promise<TaskRecord> {
     if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
-    const authority = this.adapters.recoveryAuthority;
-    if (authority === undefined) throw new DevkitError("RECOVERY_REQUIRES_OPERATOR");
-    const before = this.inspectRecovery(id);
-    if (!before.policyCurrent) throw new DevkitError("POLICY_CHANGED");
-    if (!before.baseAvailable) throw new DevkitError("RECOVERY_PREFLIGHT_FAILED");
-    const authorization = this.validateRecoveryAuthorization(await authority.authorizeRecovery(structuredClone(before)), before);
-    const after = this.inspectRecovery(id);
-    if (after.fingerprint !== before.fingerprint) throw new DevkitError("RECOVERY_STATE_CHANGED");
-    return this.store.requeueRecovered(id, after.task.version, authorization.runId, {
-      // An authority may internally use a signed or otherwise sensitive
-      // approval artifact. Persist only its stable audit hash, never the raw
-      // artifact, in task history/report output.
-      approvalHash: hash(authorization.approvalId),
-      authorizationFingerprint: authorization.fingerprint,
-      workspaceState: after.workspaceState,
-      ...(after.expectedSnapshotId === undefined ? {} : { expectedSnapshotId: after.expectedSnapshotId }),
-      ...(after.observedSnapshotId === undefined ? {} : { observedSnapshotId: after.observedSnapshotId }),
-    });
+    if (this.recovering.has(id)) throw new DevkitError("RECOVERY_ALREADY_PENDING");
+    this.recovering.add(id);
+    try {
+      const authority = this.adapters.recoveryAuthority;
+      if (authority === undefined) throw new DevkitError("RECOVERY_REQUIRES_OPERATOR");
+      const before = this.inspectRecovery(id);
+      if (!before.policyCurrent) throw new DevkitError("POLICY_CHANGED");
+      if (!before.baseAvailable) throw new DevkitError("RECOVERY_PREFLIGHT_FAILED");
+      const authorization = this.validateRecoveryAuthorization(await authority.authorizeRecovery(structuredClone(before)), before);
+      if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
+      const after = this.inspectRecovery(id);
+      if (after.fingerprint !== before.fingerprint) throw new DevkitError("RECOVERY_STATE_CHANGED");
+      return this.store.requeueRecovered(id, after.task.version, authorization.runId, {
+        // An authority may internally use a signed or otherwise sensitive
+        // approval artifact. Persist only its stable audit hash, never the raw
+        // artifact, in task history/report output.
+        approvalHash: hash(authorization.approvalId),
+        authorizationFingerprint: authorization.fingerprint,
+        workspaceState: after.workspaceState,
+        ...(after.expectedSnapshotId === undefined ? {} : { expectedSnapshotId: after.expectedSnapshotId }),
+        ...(after.observedSnapshotId === undefined ? {} : { observedSnapshotId: after.observedSnapshotId }),
+      });
+    } finally {
+      this.recovering.delete(id);
+    }
   }
   report(id: string): object {
     return JSON.parse(redact(JSON.stringify({ schemaVersion: 1, task: this.store.get(id), events: this.store.history(id), evidenceMode: this.policy.executionMode, liveValidated: false }))) as object;

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DeepSeekReviewer, Devkit, DevkitError, LocalApprovalControlPlane, LocalCodexApprovalBroker, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { DeepSeekReviewer, Devkit, DevkitError, LocalApprovalControlPlane, LocalCodexApprovalBroker, LocalRecoveryApprovalBroker, LocalRecoveryControlPlane, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -93,6 +93,33 @@ async function installLocalApprovalControlPlane(policy) {
     const { url } = await plane.start();
     return {
       broker,
+      url,
+      async dispose() { await plane.stop(); },
+    };
+  } catch (error) {
+    try { await plane.stop(); } catch { /* preserve the host startup failure */ }
+    throw error;
+  }
+}
+
+/**
+ * Recovery has a distinct opt-in from App Server item approvals. This page can
+ * only request Devkit's host-only fresh-clone recovery path; it never grants a
+ * task, model, or DSH tool a release capability.
+ */
+async function installLocalRecoveryControlPlane(policy, runtime, broker) {
+  const configured = policy.recoveryControlPlane;
+  if (configured === undefined || broker === undefined) return undefined;
+  const plane = new LocalRecoveryControlPlane({
+    broker,
+    credential: () => process.env[configured.credentialEnv] ?? "",
+    operatorId: configured.operatorId,
+    recover: async taskId => await runtime.recover(taskId),
+    ...(configured.port === undefined ? {} : { port: configured.port }),
+  });
+  try {
+    const { url } = await plane.start();
+    return {
       url,
       async dispose() { await plane.stop(); },
     };
@@ -331,15 +358,27 @@ export async function apply(ctx, config = {}) {
     timeoutMs: policy.reviewer.timeoutMs,
     credential: () => process.env[policy.reviewer.credentialEnv] ?? "",
   });
-  const runtime = new Devkit(policy, policy.executionMode === "fixture" ? createPaginationFixtureAdapters() : reviewer === undefined ? {} : { reviewer });
+  const recoveryBroker = policy.recoveryControlPlane === undefined ? undefined : new LocalRecoveryApprovalBroker();
+  const runtime = new Devkit(policy, policy.executionMode === "fixture"
+    ? createPaginationFixtureAdapters()
+    : {
+        ...(reviewer === undefined ? {} : { reviewer }),
+        ...(recoveryBroker === undefined ? {} : { recoveryAuthority: recoveryBroker }),
+      });
   let approvalControlPlane;
+  let recoveryControlPlane;
   let managed;
   try {
+    recoveryControlPlane = await installLocalRecoveryControlPlane(policy, runtime, recoveryBroker);
     approvalControlPlane = await installLocalApprovalControlPlane(policy);
     managed = await installManagedCodexProvider(ctx, policy);
   } catch (error) {
     try {
-      await approvalControlPlane?.dispose();
+      try {
+        await recoveryControlPlane?.dispose();
+      } finally {
+        await approvalControlPlane?.dispose();
+      }
     } finally {
       await runtime.close();
     }
@@ -350,7 +389,11 @@ export async function apply(ctx, config = {}) {
       // Decline any outstanding local decision before cancelling the runtime.
       // A future direct client can then leave its turn promptly rather than
       // waiting for an approval timeout during plugin unload.
-      await approvalControlPlane?.dispose();
+      try {
+        await recoveryControlPlane?.dispose();
+      } finally {
+        await approvalControlPlane?.dispose();
+      }
     } finally {
       try {
         await runtime.close();
@@ -376,6 +419,15 @@ export async function apply(ctx, config = {}) {
               transport: "loopback",
               url: approvalControlPlane.url,
               authentication: "host-secret",
+            },
+          }),
+          ...(recoveryControlPlane === undefined ? {} : {
+            recoveryControlPlane: {
+              state: "active",
+              transport: "loopback",
+              url: recoveryControlPlane.url,
+              authentication: "host-secret",
+              action: "fresh-clone-recovery-only",
             },
           }),
         },

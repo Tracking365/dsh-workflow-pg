@@ -66,6 +66,25 @@ test("trusted local approval control-plane policy holds only an environment refe
   assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexApprovalControlPlane: { ...codexApprovalControlPlane, port: -1 } }), /INVALID_APPROVAL_CONTROL_PLANE/);
   assert.throws(() => validateHostPolicy({ ...f.policy, codexApprovalControlPlane }), /LIVE_APPROVAL_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE/);
 });
+test("trusted recovery control-plane policy holds only an environment reference outside fixtures", () => {
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const recoveryControlPlane = {
+    mode: "loopback-v1" as const,
+    credentialEnv: "DSH_DEVKIT_RECOVERY_CONTROL_SECRET",
+    operatorId: "local-operator",
+    port: 0,
+  };
+  assert.deepEqual(
+    validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", recoveryControlPlane }).recoveryControlPlane,
+    recoveryControlPlane,
+  );
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", recoveryControlPlane: { ...recoveryControlPlane, credentialEnv: "PATH" } }), /INVALID_RECOVERY_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", recoveryControlPlane: { ...recoveryControlPlane, operatorId: "bad operator" } }), /INVALID_RECOVERY_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", recoveryControlPlane: { ...recoveryControlPlane, port: -1 } }), /INVALID_RECOVERY_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, recoveryControlPlane }), /LIVE_RECOVERY_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE/);
+  assert.throws(() => assertPaginationFixturePolicy({ ...f.policy, recoveryControlPlane }), /FIXTURE_REPOSITORY_POLICY_INVALID/);
+});
 test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
   const f = fixture();
   const runtime = new Devkit(f.policy, createPaginationFixtureAdapters());
@@ -360,6 +379,45 @@ test("recovery keeps the lease if the workspace changes while an operator decisi
     assert.equal(runtime.status(task.taskId).status, "interrupted");
     assert.equal(runtime.store.hasLease(task.taskId), true);
   } finally {
+    await runtime.close();
+  }
+});
+test("only one host recovery authorization can be pending for a retained task", async () => {
+  const f = fixture();
+  let signalAuthorizationStarted!: () => void;
+  const authorizationStarted = new Promise<void>(resolve => { signalAuthorizationStarted = resolve; });
+  let permitRecovery: (() => void) | undefined;
+  const runtime = new Devkit(f.policy, {
+    ...adapters({ execute: async () => ({ stopped: false, runId: "writer-without-stop-proof" }) }),
+    recoveryAuthority: {
+      async authorizeRecovery(inspection) {
+        return await new Promise(resolve => {
+          permitRecovery = () => resolve({
+            action: "retry-from-base",
+            taskId: inspection.task.taskId,
+            runId: inspection.lease.runId,
+            fingerprint: inspection.fingerprint,
+            approvalId: "fixture-single-pending-recovery-approval",
+            oldWriterStopped: true,
+          });
+          signalAuthorizationStarted();
+        });
+      },
+    },
+  });
+  let recovery: Promise<import("../src/index.js").TaskRecord> | undefined;
+  try {
+    const task = runtime.create(input);
+    assert.equal((await runtime.run(task.taskId)).status, "interrupted");
+    recovery = runtime.recover(task.taskId);
+    await authorizationStarted;
+    await assert.rejects(runtime.recover(task.taskId), /RECOVERY_ALREADY_PENDING/);
+    permitRecovery?.();
+    assert.equal((await recovery).status, "queued");
+    assert.equal(runtime.store.hasLease(task.taskId), false);
+  } finally {
+    permitRecovery?.();
+    await recovery?.catch(() => undefined);
     await runtime.close();
   }
 });

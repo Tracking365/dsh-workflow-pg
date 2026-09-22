@@ -5,7 +5,7 @@ import type { CommandSpec } from "../adapters/process.js";
 
 /** This schema belongs to the trusted host, never to a model-facing tool. */
 export function validateHostPolicy(value: unknown): HostPolicy {
-  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "codexAppServer", "codexApprovalControlPlane", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
+  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "codexAppServer", "codexApprovalControlPlane", "recoveryControlPlane", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
   const dataRoot = text(p.dataRoot, "dataRoot");
   const executionMode = String(p.executionMode);
   if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(executionMode)) throw new DevkitError("INVALID_HOST_POLICY");
@@ -54,6 +54,23 @@ export function validateHostPolicy(value: unknown): HostPolicy {
       ...(c.port === undefined ? {} : { port: Number(c.port) }),
     };
   }
+  let recoveryControlPlane: HostPolicy["recoveryControlPlane"];
+  if (p.recoveryControlPlane !== undefined) {
+    if (executionMode === "fixture") throw new DevkitError("LIVE_RECOVERY_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE");
+    const c = object(p.recoveryControlPlane, ["mode", "credentialEnv", "operatorId", "port"]);
+    if (c.mode !== "loopback-v1") throw new DevkitError("INVALID_RECOVERY_CONTROL_PLANE");
+    const credentialEnv = text(c.credentialEnv, "recoveryControlPlane.credentialEnv", 100);
+    if (!/^DSH_DEVKIT_[A-Z0-9_]{1,80}$/.test(credentialEnv)) throw new DevkitError("INVALID_RECOVERY_CONTROL_PLANE");
+    const operatorId = text(c.operatorId, "recoveryControlPlane.operatorId", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/.test(operatorId)) throw new DevkitError("INVALID_RECOVERY_CONTROL_PLANE");
+    if (c.port !== undefined && (!Number.isSafeInteger(c.port) || Number(c.port) < 0 || Number(c.port) > 65535)) throw new DevkitError("INVALID_RECOVERY_CONTROL_PLANE");
+    recoveryControlPlane = {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId,
+      ...(c.port === undefined ? {} : { port: Number(c.port) }),
+    };
+  }
   const map = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("INVALID_HOST_POLICY");
     return object(value, Object.keys(value));
@@ -93,6 +110,7 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     ...(reviewer === undefined ? {} : { reviewer }),
     ...(codexAppServer === undefined ? {} : { codexAppServer }),
     ...(codexApprovalControlPlane === undefined ? {} : { codexApprovalControlPlane }),
+    ...(recoveryControlPlane === undefined ? {} : { recoveryControlPlane }),
     repositories,
     verificationProfiles,
     maxRetries: Number(p.maxRetries),

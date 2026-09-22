@@ -430,6 +430,100 @@ test("native approval presentation fails closed when its declared host secret is
   }
 });
 
+test("native policy starts and disposes a separately authenticated recovery presentation without exposing a recovery tool", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-recovery-plane-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_RECOVERY_TEST_SECRET";
+  const secret = "native-recovery-control-secret-32-bytes!";
+  const previous = process.env[credentialEnv];
+  process.env[credentialEnv] = secret;
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    recoveryControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-recovery-operator",
+      port: 0,
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  let mounted = ctx.plugin(plugin, { configPath });
+  let recoveryUrl;
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.recovery, { state: "configured", authority: "host-only" });
+    assert.deepEqual(doctor.value.nativeRuntime.recoveryControlPlane, {
+      state: "active",
+      transport: "loopback",
+      url: doctor.value.nativeRuntime.recoveryControlPlane.url,
+      authentication: "host-secret",
+      action: "fresh-clone-recovery-only",
+    });
+    recoveryUrl = doctor.value.nativeRuntime.recoveryControlPlane.url;
+    assert.match(recoveryUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const page = await fetch(`${recoveryUrl}/`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Local recovery secret/);
+    assert.equal(html.includes(secret), false);
+    assert.equal(ctx.tools.get("dev_task_recover"), undefined);
+
+    await mounted.dispose();
+    mounted = undefined;
+    await assert.rejects(fetch(`${recoveryUrl}/`));
+  } finally {
+    await mounted?.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
+test("native recovery presentation fails closed when its declared host secret is unavailable", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-recovery-secret-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_RECOVERY_MISSING_SECRET";
+  const previous = process.env[credentialEnv];
+  delete process.env[credentialEnv];
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    recoveryControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-recovery-operator",
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+  try {
+    await assert.rejects(async () => { await mounted; }, /RECOVERY_CONTROL_PLANE_CREDENTIAL_UNAVAILABLE/);
+    assert.equal(ctx.tools.get("devkit_doctor"), undefined);
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
 test("native doctor treats an externally mounted workspace-write provider as non-executable until DevKit owns its boundary", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-workspace-write-"));
   const configPath = path.join(root, "policy.json");

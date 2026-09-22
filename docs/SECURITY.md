@@ -155,10 +155,13 @@ merge/deployment feature is exposed. Patches remain local and fixture evidence s
 `accept()` and `recover()` are trusted in-process APIs, not model tools. `recover()` requires a
 host `RecoveryAuthority` to bind an approval to the task, retained run lease and a recovery
 facts fingerprint, prove the old writer stopped, and survive a second inspection before it
-queues a fresh clone. The interrupted clone is never deleted or reused. The shipped native DSH
-plugin does not configure that authority; task history stores only a hash of its approval audit
-artifact, never the raw artifact. Its callback seam is not itself an authentication
-mechanism; authenticated identity, expiry and approval presentation remain unimplemented.
+queues a fresh clone. The interrupted clone is never deleted or reused. An explicitly configured
+disabled native policy may supply `recoveryControlPlane`: its separate loopback page uses a
+host-secret login, `HttpOnly` SameSite session, CSRF/origin checks, bounded expiry/audit queues,
+and an explicit old-writer-stopped confirmation. It binds the decision to exact task/run/
+fingerprint facts; no recovery capability is exposed as a model tool. Task history stores only a
+hash of its approval artifact, never the raw artifact. This local-secret presentation is still
+not multi-user identity or independent process attestation.
 
 ## Explicit gaps / do not relax these to make tests pass
 
@@ -180,9 +183,10 @@ mechanism; authenticated identity, expiry and approval presentation remain unimp
   The separate readonly reviewer has a lazy host configuration path but no live behavior
   evidence. There is no credential broker; live runs remain blocked.
 * Recovery never infers quiescence from a PID, timeout or lease age. The durable restart and
-  host-only fresh-clone path are fixture-tested, but the shipped native DSH profile has no
-  authenticated `RecoveryAuthority`; public `resume` therefore still raises
-  `RECOVERY_REQUIRES_OPERATOR` and cannot release a retained lease.
+  host-only fresh-clone path are fixture-tested. An explicit disabled native policy can start a
+  local-secret recovery presentation that binds/limits/expires decisions and requires an operator
+  assertion that the old writer stopped; it still has no multi-user identity or live process
+  proof. Public `resume` remains unable to release a retained lease.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.
 * Reproduction uses a frozen, trusted Node TAP test plan. A general-purpose expected failure
   signature and newly proposed regression overlay are not implemented. A failed assertion

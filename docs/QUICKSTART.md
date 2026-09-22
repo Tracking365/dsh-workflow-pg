@@ -175,7 +175,38 @@ composition can start a provider.
 
 On a restart, an unfinished task is marked `interrupted` and keeps its lease and artifacts.
 The packaged DSH tools do not have authority to release it: public `resume` remains blocked.
-A future authenticated host recovery control plane may use the internal recovery API only after
-it proves the old execution stopped, binds approval to the current recovery facts, preserves the
-old candidate, and queues a fresh clone from the frozen base. Never remove locks just to get a
-green run.
+
+### Optional interrupted-task recovery presentation
+
+This is separate from the approval page above. It does not enable Codex, a model connection, or
+`dev_task_run`, and it does not add a `dev_task_recover` tool. It is an explicit local operator
+path for a retained interrupted lease only. Use a different dedicated local secret of at least
+32 characters:
+
+```sh
+export DSH_DEVKIT_RECOVERY_SECRET='a-different-local-secret-of-at-least-32-characters'
+```
+
+Add this host-owned block beside `codexApprovalControlPlane` or `reviewer` in a disabled policy:
+
+```json
+"recoveryControlPlane": {
+  "mode": "loopback-v1",
+  "credentialEnv": "DSH_DEVKIT_RECOVERY_SECRET",
+  "operatorId": "local-recovery-operator",
+  "port": 0
+}
+```
+
+The listener binds only `127.0.0.1`; with `port: 0`, `devkit_doctor` reports its allocated URL
+under `nativeRuntime.recoveryControlPlane`. After local-secret login, enter the interrupted task
+ID. The page displays only retained-run facts, requests a bound one-time authorization, and
+requires a checkbox confirming that the old writer has stopped. It then rechecks the durable
+facts, preserves the old candidate, and queues a fresh clone from the frozen base. It never
+reuses the old workspace or removes a lease based on a PID, timeout, or age. Closing the plugin
+closes the listener and declines unsettled requests; a missing, short, or invalid secret fails
+plugin loading.
+
+This is a private-local-host control, not a multi-user identity or process-attestation system.
+Do not share its secret or use it to assert that an unverified writer stopped. Public `resume`
+remains read-only and cannot release the lease.

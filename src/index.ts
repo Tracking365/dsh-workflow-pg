@@ -9,6 +9,8 @@ export * from "./adapters/codex-app-server-client.js";
 export * from "./adapters/macos-seatbelt-app-server-client.js";
 export * from "./adapters/local-approval-broker.js";
 export * from "./adapters/local-approval-control-plane.js";
+export * from "./adapters/local-recovery-broker.js";
+export * from "./adapters/local-recovery-control-plane.js";
 export * from "./adapters/workspace.js";
 export * from "./adapters/context.js";
 export * from "./adapters/review.js";
