@@ -1,4 +1,4 @@
-# DSH compatibility — ToolRuntime, offline AgentLoop, launcher, and Codex provider registration fixtures verified
+# DSH compatibility — ToolRuntime, offline AgentLoop, candidate session, launcher, and Codex provider fixtures verified
 
 Checked 2026-09-22 against official source/documentation and the installed, exact npm packages.
 The fixtures deliberately do not access a user credential or remote model. One test-only,
@@ -12,8 +12,10 @@ Sources:
   and `ToolRuntime.execute` are the real registry/dispatch seam.
 - `@deepseek-ai/dsh-agent-loop@0.1.6-alpha.2`, installed at
   `node_modules/@deepseek-ai/dsh-agent-loop/lib/types/index.d.ts`: `AgentLoop` is the concrete
-  factory and turn/step driver behind `ctx.agents`; it dispatches model tool calls through the
-  real tool scheduler and owns cancellation/stream settlement.
+  factory and turn/step driver behind `ctx.agents`; `ctx.agents.create()` accepts a session
+  `cwd` and parent Agent ownership, while DevKit canonicalizes the candidate path before passing
+  it there. It dispatches model tool calls through the real tool scheduler and owns
+  cancellation/stream settlement.
 - `@deepseek-ai/dsh-llm@0.1.6-alpha.2`, installed at
   `node_modules/@deepseek-ai/dsh-llm/lib/types/index.d.ts`: `LlmRuntime.registerAdapter()` and
   `LlmAdapter.stream()` are the supported local adapter seam. `isAgentLoopRequest()` proves the
@@ -78,8 +80,18 @@ fixture provider through its real registry, and verifies that `DshCodexExecutor`
 bounded/redacted text task, forwards the exact caller signal and parent Agent, requests none
 of the Codex provider's unsupported capabilities, and awaits `dispose()` before claiming the
 writer stopped. Missing providers, provider failures, teardown failures, and a parent session
-whose canonical cwd differs from the candidate worktree all fail closed. The fixture provider
-does not start Codex.
+whose canonical cwd differs from the candidate worktree all fail closed. The same file composes
+the published `LlmRuntime`/session/prompt/AgentRegistry/ToolRuntime/AgentLoop services, creates
+a short-lived candidate-bound parent through `ctx.agents.create()`, verifies its lineage and
+post-run disposal, then reaches the fixture provider through that real parent. It starts no
+model or Codex process.
+
+That candidate-parent fixture also mounts the real published
+`@deepseek-ai/dsh-subagent-codex` provider with a subprocess seam that records `cwd` and throws
+before execution. The official provider reaches that seam exactly once with the canonical
+candidate workspace, then the bridge reports `CODEX_SUBAGENT_START_FAILED` and releases the
+candidate parent. This verifies the official provider's cwd handoff without launching an App
+Server, using credentials, or making a network request.
 
 The second native ToolRuntime fixture mounts the actual published
 `@deepseek-ai/dsh-subagent-codex` plugin with the real `SubagentRuntime` and a deliberately
@@ -95,9 +107,9 @@ launch its package-local Codex App Server. Its temporary npm cache avoids readin
 the user's shared npm cache.
 
 The workspace guard is necessary because the official provider starts a child in
-`parent.session.header.cwd` and exposes no public per-run cwd option. DevKit therefore refuses
-to delegate unless that canonical directory is exactly its isolated candidate worktree; a
-prompt instruction cannot substitute for this boundary.
+`parent.session.header.cwd` and exposes no public per-run cwd option. DevKit's composition
+layer therefore creates a canonical candidate-bound parent and the lower bridge rechecks that
+directory before delegation; a prompt instruction cannot substitute for this boundary.
 
 `npm run test:launcher` adds a second, intentionally slow gate. It creates a new temporary
 `DSH_HOME`, initializes a headless profile, packages the current checkout, installs that
@@ -117,13 +129,14 @@ that package-manager-only warning.
 
 ## Remaining compatibility gates
 
-The published registry, offline agent-session tool flow, provider registration, and launcher
-lifecycle are now covered. No DSH parent session has been composed at the isolated candidate
-cwd, and no official Codex App Server process, remote model request or credential has been
-started. Cancellation through an actual provider process, provider-specific wire behavior, and
-an enforceable filesystem/network/credential sandbox remain unverified. A01–A05 therefore
-remain partial. The default native policy keeps `executionMode: "disabled"`; `pagination-v1` is
-only a double-opt-in, content-locked regression fixture and does not alter the live gate.
+The published registry, offline agent-session tool flow, candidate-parent composition, provider
+registration, and launcher lifecycle are now covered. No official Codex App Server process,
+remote model request or credential has been started, and the candidate-parent path has not run
+inside a deployed live task. Cancellation through an actual provider process, provider-specific
+wire behavior, and an enforceable filesystem/network/credential sandbox remain unverified.
+A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
+`pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
+the live gate.
 
 ## Toolchain decision
 

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Devkit, DevkitError, assertPaginationFixturePolicy, createDshCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { Devkit, DevkitError, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -46,8 +46,9 @@ function codexProviderStatus(ctx) {
 
 function codexExecutor(ctx, exec) {
   const subagents = ctx.get("subagents");
-  if (!exec.agent || !subagents || typeof subagents.getProvider !== "function" || subagents.getProvider("codex") === undefined) return undefined;
-  return createDshCodexExecutor({ subagents, parent: exec.agent });
+  const agents = ctx.get("agents");
+  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || subagents.getProvider("codex") === undefined) return undefined;
+  return createDshCandidateWorkspaceCodexExecutor({ agents, subagents, parent: exec.agent });
 }
 
 /** Pure definition factory permits contract tests without pretending to run a DSH Context. */

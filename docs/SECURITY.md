@@ -41,11 +41,15 @@ checks response shape/model identity, and rejects known credential patterns in c
 Regex redaction is best-effort, not a complete secret detector. Do not pass real secrets.
 
 The dormant DSH Codex bridge delegates only through the official `subagents` registry; it
-does not invoke a Codex CLI or HTTP endpoint itself. Before it can call a provider, it requires
-the parent session's canonical `cwd` to equal the isolated candidate worktree, because the
+does not invoke a Codex CLI or HTTP endpoint itself. Its candidate-session composition layer
+canonicalizes the already-created DevKit workspace, creates a short-lived DSH Agent at that
+cwd, and records the invoking Agent as its lifecycle/lineage parent. The bound bridge then
+requires the new parent session's canonical `cwd` to equal the candidate worktree, because the
 official provider owns its child cwd and has no public per-run cwd override. A mismatch returns
 `CODEX_WORKSPACE_BINDING_UNAVAILABLE` without starting a child. After a published child, the
-bridge waits for `dispose()` and retains the writer lease if teardown cannot be proved.
+bridge waits for both the child run and candidate parent handle to dispose; an unproven teardown
+retains the writer lease. The default disabled policy rejects a task before this composition is
+invoked.
 
 `git()` disables hooks for generated fixture repositories; it is not a production Git
 adapter and does not implement organization signing/hooks policies. No host commit/push/
@@ -57,10 +61,11 @@ capabilities, binding to operator identity and expiration remain unimplemented.
 
 ## Explicit gaps / do not relax these to make tests pass
 
-* The official Codex provider can be registered and the DevKit bridge is fail-closed on an
-  unbound workspace, but no real Codex session has been composed at the candidate worktree.
-  There is no verified OS sandbox, network egress enforcement, credential broker or readonly
-  tool-using reviewer; live runs remain blocked.
+* Native fixtures compose a real candidate-bound DSH parent and confirm that the official
+  provider's deliberately rejecting subprocess seam receives that canonical cwd. They do not
+  start an App Server or prove its filesystem, network, credential, approval or cancellation
+  behavior. There is no verified OS sandbox, network egress enforcement, credential broker or
+  readonly tool-using reviewer; live runs remain blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.

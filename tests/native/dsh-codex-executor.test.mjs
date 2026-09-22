@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { Context } from "@deepseek-ai/cordis";
+import AgentRegistry from "@deepseek-ai/dsh-agent";
+import AgentLoop from "@deepseek-ai/dsh-agent-loop";
+import LlmRuntime from "@deepseek-ai/dsh-llm";
+import SessionStore from "@deepseek-ai/dsh-session";
+import SessionProjectionRegistry from "@deepseek-ai/dsh-session-projection";
 import { SubagentRuntime } from "@deepseek-ai/dsh-subagent";
-import { DshCodexExecutor } from "../../dist/src/index.js";
+import * as codexProvider from "@deepseek-ai/dsh-subagent-codex";
+import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
+import { ToolRuntime } from "@deepseek-ai/dsh-tools";
+import { DshCandidateWorkspaceCodexExecutor, DshCodexExecutor } from "../../dist/src/index.js";
 
 const capabilities = {
   agentOptions: false,
@@ -67,6 +76,45 @@ async function withRegistry(start, action) {
     await release();
     await fiber.dispose();
   }
+}
+
+async function createAgentLoopHarness() {
+  const ctx = new Context();
+  const llmFiber = ctx.plugin(LlmRuntime);
+  await llmFiber;
+  const sessionsFiber = ctx.plugin(SessionStore);
+  await sessionsFiber;
+  const projectionsFiber = ctx.plugin(SessionProjectionRegistry);
+  await projectionsFiber;
+  const promptFiber = ctx.plugin(SystemPrompt, {
+    includeHarnessIdentity: false,
+    includeRuntimeContext: false,
+    personaPrefix: "Candidate Codex session fixture.",
+    personaSuffix: "",
+  });
+  await promptFiber;
+  const agentsFiber = ctx.plugin(AgentRegistry);
+  await agentsFiber;
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const loopFiber = ctx.plugin(AgentLoop, { agents: [] });
+  await loopFiber;
+  const subagentsFiber = ctx.plugin(SubagentRuntime, { maxDepth: 2, maxActiveSubagents: 1 });
+  await subagentsFiber;
+
+  return {
+    ctx,
+    async dispose() {
+      await subagentsFiber.dispose();
+      await loopFiber.dispose();
+      await toolsFiber.dispose();
+      await agentsFiber.dispose();
+      await promptFiber.dispose();
+      await projectionsFiber.dispose();
+      await sessionsFiber.dispose();
+      await llmFiber.dispose();
+    },
+  };
 }
 
 test("DshCodexExecutor uses the real DSH subagent registry with a bounded self-contained prompt", async () => {
@@ -162,4 +210,177 @@ test("DshCodexExecutor rejects a parent session not bound to the candidate works
     });
   });
   assert.equal(starts, 0);
+});
+
+test("DshCandidateWorkspaceCodexExecutor composes a real candidate-bound DSH parent session and releases it", { timeout: 10000 }, async () => {
+  const sourceWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-source-parent-"));
+  const candidateWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-candidate-parent-"));
+  const harness = await createAgentLoopHarness();
+  let source;
+  let release;
+  let candidateSessionId;
+  let observed;
+  let disposed = 0;
+
+  try {
+    source = await harness.ctx.agents.create({
+      sessionId: "dsh-devkit-source-parent-session",
+      meta: { cwd: sourceWorkspace },
+    });
+    release = harness.ctx.subagents.registerProvider({
+      name: "codex",
+      capabilities,
+      inheritsParentContext: false,
+      async start(startRequest) {
+        observed = startRequest;
+        return {
+          id: "candidate-codex-run",
+          localAgent: undefined,
+          result: Promise.resolve({ output: [{ type: "text", text: "fixture complete" }], stopReason: "completed" }),
+          dispose: async () => { disposed += 1; },
+        };
+      },
+    });
+    const agents = {
+      create(options) {
+        candidateSessionId = options.sessionId;
+        assert.equal(options.parentAgent, source.agent);
+        assert.deepEqual(options.meta, {
+          cwd: realpathSync(candidateWorkspace),
+          parentSession: source.agent.session.id,
+          origin: "subagent",
+          delegationDepth: 1,
+        });
+        return harness.ctx.agents.create(options);
+      },
+    };
+    const executor = new DshCandidateWorkspaceCodexExecutor({
+      agents,
+      subagents: harness.ctx.subagents,
+      parent: source.agent,
+    });
+
+    assert.deepEqual(await executor.execute(request(new AbortController().signal, candidateWorkspace)), {
+      stopped: true,
+      runId: "candidate-codex-run",
+    });
+    assert.ok(observed, "the fixture provider must receive the candidate parent");
+    assert.notEqual(observed.parent, source.agent);
+    assert.equal(observed.parent.session.header.cwd, realpathSync(candidateWorkspace));
+    assert.equal(observed.parent.session.header.parentSession, source.agent.session.id);
+    assert.equal(observed.parent.session.header.origin, "subagent");
+    assert.equal(observed.parent.session.header.delegationDepth, 1);
+    assert.equal(disposed, 1);
+    assert.equal(harness.ctx.agents.get(candidateSessionId), undefined, "the short-lived candidate parent is released after the Codex child settles");
+    assert.equal(harness.ctx.sessions.get(candidateSessionId), undefined, "the candidate Session is removed with its owned Agent handle");
+  } finally {
+    await release?.();
+    await source?.dispose();
+    await harness.dispose();
+  }
+});
+
+test("DshCandidateWorkspaceCodexExecutor sends the real official provider only the candidate cwd at its subprocess seam", { timeout: 10000 }, async () => {
+  const sourceWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-official-source-"));
+  const candidateWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-official-candidate-"));
+  const harness = await createAgentLoopHarness();
+  let source;
+  let providerFiber;
+  let disposeSubprocess;
+  let candidateSessionId;
+  const spawnCwds = [];
+
+  try {
+    disposeSubprocess = harness.ctx.provide("subprocess", {
+      spawn(spec) {
+        spawnCwds.push(spec.cwd);
+        throw new Error("fixture subprocess seam refuses to start Codex");
+      },
+    });
+    providerFiber = harness.ctx.plugin(codexProvider, {
+      providerName: "codex",
+      env: {},
+      permissionMode: "never",
+      disposeGraceMs: 3000,
+    });
+    await providerFiber;
+    source = await harness.ctx.agents.create({
+      sessionId: "dsh-devkit-official-source-session",
+      meta: { cwd: sourceWorkspace },
+    });
+    const agents = {
+      create(options) {
+        candidateSessionId = options.sessionId;
+        return harness.ctx.agents.create(options);
+      },
+    };
+    const executor = new DshCandidateWorkspaceCodexExecutor({
+      agents,
+      subagents: harness.ctx.subagents,
+      parent: source.agent,
+    });
+
+    assert.deepEqual(await executor.execute(request(new AbortController().signal, candidateWorkspace)), {
+      stopped: true,
+      failure: "CODEX_SUBAGENT_START_FAILED",
+    });
+    assert.deepEqual(spawnCwds, [realpathSync(candidateWorkspace)]);
+    assert.equal(harness.ctx.agents.get(candidateSessionId), undefined, "the failed official-provider start still releases the candidate parent");
+  } finally {
+    await source?.dispose();
+    await providerFiber?.dispose();
+    await disposeSubprocess?.();
+    await harness.dispose();
+  }
+});
+
+test("DshCandidateWorkspaceCodexExecutor fails closed when its candidate parent cannot be created or released", async () => {
+  let starts = 0;
+  let childDisposals = 0;
+  await withRegistry(async () => {
+    starts += 1;
+    return {
+      id: "candidate-disposal-run",
+      localAgent: undefined,
+      result: Promise.resolve({ output: [], stopReason: "completed" }),
+      dispose: async () => { childDisposals += 1; },
+    };
+  }, async (subagents) => {
+    const creationFailure = new DshCandidateWorkspaceCodexExecutor({
+      subagents,
+      parent: parent(),
+      agents: {
+        async create() {
+          throw new Error("candidate session factory unavailable");
+        },
+      },
+    });
+    assert.deepEqual(await creationFailure.execute(request()), {
+      stopped: true,
+      failure: "CODEX_PARENT_SESSION_START_FAILED",
+    });
+    assert.equal(starts, 0, "a failed candidate-parent composition must not publish a Codex child");
+
+    const disposalFailure = new DshCandidateWorkspaceCodexExecutor({
+      subagents,
+      parent: parent(),
+      agents: {
+        async create() {
+          return {
+            agent: parent(),
+            async dispose() {
+              throw new Error("candidate parent teardown cannot be proved");
+            },
+          };
+        },
+      },
+    });
+    assert.deepEqual(await disposalFailure.execute(request()), {
+      stopped: false,
+      runId: "candidate-disposal-run",
+      failure: "CODEX_PARENT_SESSION_DISPOSAL_UNCONFIRMED",
+    });
+  });
+  assert.equal(starts, 1);
+  assert.equal(childDisposals, 1, "the published Codex child still receives its own disposal attempt");
 });

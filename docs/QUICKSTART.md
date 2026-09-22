@@ -94,10 +94,13 @@ ID A1, then inspect status/report. `dev_task_run` returns a blocked task with
 bypass it. The test-only `pagination-v1` exception above is content-locked and cannot turn
 this general disabled policy into a local execution facility.
 
-The future Codex bridge will also fail closed with `CODEX_WORKSPACE_BINDING_UNAVAILABLE`
-unless the parent DSH session's canonical working directory is exactly the isolated DevKit
-candidate worktree. The installed provider has no public per-run cwd option, so a normal
-session rooted at the source repository cannot be treated as a substitute.
+The dormant Codex bridge composes a short-lived DSH parent session whose canonical working
+directory is exactly the isolated DevKit candidate worktree, retaining the invoking session
+only as its lifecycle/lineage parent. It still fails closed with
+`CODEX_WORKSPACE_BINDING_UNAVAILABLE` when that candidate directory cannot be resolved. The
+installed provider has no public per-run cwd option, so a normal session rooted at the source
+repository cannot be treated as a substitute. The default disabled policy blocks before this
+composition can start a provider.
 
 No automatic resume currently exists. An interrupted task keeps its lease and artifacts;
 an operator must prove the old execution has stopped and reconcile its effects before

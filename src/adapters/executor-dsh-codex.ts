@@ -1,6 +1,8 @@
-import type { Agent } from "@deepseek-ai/dsh-agent";
+import type AgentRegistry from "@deepseek-ai/dsh-agent";
+import type { Agent, AgentHandle, CreateAgentOptions } from "@deepseek-ai/dsh-agent";
 import type { ContentBlock } from "@deepseek-ai/dsh-llm";
 import type { SubagentRuntime } from "@deepseek-ai/dsh-subagent";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { redact } from "../domain/security.js";
@@ -15,6 +17,19 @@ export interface DshCodexExecutorOptions {
   /** The Agent whose tool call owns the delegated Codex process. */
   readonly parent: Agent;
   /** A host-configured provider instance; default is the official `codex` provider. */
+  readonly providerName?: string;
+}
+
+/**
+ * Host services used to mint the short-lived DSH parent whose cwd is the
+ * already-created DevKit candidate workspace. The original tool Agent remains
+ * the runtime owner and durable lineage parent; it never lends its source-tree
+ * cwd to Codex.
+ */
+export interface DshCandidateWorkspaceCodexExecutorOptions {
+  readonly agents: Pick<AgentRegistry, "create">;
+  readonly subagents: Pick<SubagentRuntime, "getProvider" | "start">;
+  readonly parent: Agent;
   readonly providerName?: string;
 }
 
@@ -74,6 +89,32 @@ function stopFailure(reason: string): string {
   }
 }
 
+function canonicalDirectory(value: string): string | undefined {
+  if (!isAbsolute(value)) return undefined;
+  try {
+    return realpathSync(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function candidateParentOptions(request: ExecutionRequest, parent: Agent): CreateAgentOptions | undefined {
+  const cwd = canonicalDirectory(request.workspace);
+  const parentDepth = parent.session.header.delegationDepth ?? 0;
+  if (cwd === undefined || !Number.isSafeInteger(parentDepth) || parentDepth >= Number.MAX_SAFE_INTEGER) return undefined;
+  return {
+    sessionId: `devkit-codex-candidate-${randomUUID()}` as CreateAgentOptions["sessionId"],
+    parentAgent: parent,
+    meta: {
+      cwd,
+      parentSession: parent.session.id,
+      origin: "subagent",
+      delegationDepth: parentDepth + 1,
+    },
+    signal: request.signal,
+  };
+}
+
 /**
  * The official provider starts Codex in `parent.session.header.cwd`; it has no
  * public per-run working-directory option. Never let a DevKit worktree and
@@ -82,12 +123,10 @@ function stopFailure(reason: string): string {
  */
 function isBoundToCandidateWorkspace(parent: Agent, workspace: string): boolean {
   const parentCwd = parent.session.header.cwd;
-  if (typeof parentCwd !== "string" || !isAbsolute(parentCwd) || !isAbsolute(workspace)) return false;
-  try {
-    return realpathSync(parentCwd) === realpathSync(workspace);
-  } catch {
-    return false;
-  }
+  if (typeof parentCwd !== "string") return false;
+  const parentWorkspace = canonicalDirectory(parentCwd);
+  const candidateWorkspace = canonicalDirectory(workspace);
+  return parentWorkspace !== undefined && parentWorkspace === candidateWorkspace;
 }
 
 /**
@@ -148,4 +187,70 @@ export class DshCodexExecutor implements CodeExecutor {
 
 export function createDshCodexExecutor(options: DshCodexExecutorOptions): DshCodexExecutor {
   return new DshCodexExecutor(options);
+}
+
+/**
+ * Compose an actual, short-lived DSH parent Agent at the isolated candidate
+ * workspace before delegating to the official Codex provider. The normal user
+ * session is retained only as the lifecycle/lineage owner, so its source
+ * repository cwd can never become the Codex child cwd by accident.
+ *
+ * This is a composition primitive, not a live-execution switch. DevKit's host
+ * policy still blocks live runs until filesystem, network and credential
+ * boundaries are enforced independently.
+ */
+export class DshCandidateWorkspaceCodexExecutor implements CodeExecutor {
+  readonly family = "codex-app-server";
+  readonly kind = "live" as const;
+  private readonly providerName: string;
+
+  constructor(private readonly options: DshCandidateWorkspaceCodexExecutorOptions) {
+    this.providerName = options.providerName ?? DEFAULT_PROVIDER;
+  }
+
+  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+    if (request.signal.aborted) return { stopped: true, failure: "CANCELLED" };
+    const parentOptions = candidateParentOptions(request, this.options.parent);
+    if (parentOptions === undefined) return { stopped: true, failure: "CODEX_WORKSPACE_BINDING_UNAVAILABLE" };
+    // Avoid creating a candidate-bound session when the provider is absent.
+    // The bound bridge repeats this lookup to handle a provider-removal race.
+    if (this.options.subagents.getProvider(this.providerName) === undefined) {
+      return { stopped: true, failure: "CODEX_PROVIDER_UNAVAILABLE" };
+    }
+
+    let handle: AgentHandle;
+    try {
+      handle = await this.options.agents.create(parentOptions);
+    } catch {
+      return request.signal.aborted
+        ? { stopped: true, failure: "CANCELLED" }
+        : { stopped: true, failure: "CODEX_PARENT_SESSION_START_FAILED" };
+    }
+
+    let result: ExecutionResult;
+    try {
+      result = await new DshCodexExecutor({
+        subagents: this.options.subagents,
+        parent: handle.agent,
+        providerName: this.providerName,
+      }).execute(request);
+    } catch {
+      result = { stopped: true, failure: "CODEX_PARENT_SESSION_EXECUTION_FAILED" };
+    }
+
+    try {
+      await handle.dispose();
+    } catch {
+      return {
+        stopped: false,
+        ...(result.runId === undefined ? {} : { runId: result.runId }),
+        failure: "CODEX_PARENT_SESSION_DISPOSAL_UNCONFIRMED",
+      };
+    }
+    return result;
+  }
+}
+
+export function createDshCandidateWorkspaceCodexExecutor(options: DshCandidateWorkspaceCodexExecutorOptions): DshCandidateWorkspaceCodexExecutor {
+  return new DshCandidateWorkspaceCodexExecutor(options);
 }
