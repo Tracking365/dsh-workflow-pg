@@ -3,7 +3,8 @@
 ## Actual environment
 
 Darwin 23.6.0 x86_64; Node v24.14.1; npm 11.11.0; Git 2.53.0. The committed lockfile pins
-DSH **0.1.6-alpha.2**, DSH Tools **0.1.6-alpha.2**, optional DSH Subagent and Codex Provider
+DSH **0.1.6-alpha.2**, DSH Tools **0.1.6-alpha.2**, DSH Agent/AgentLoop/LLM/Session core
+test dependencies **0.1.6-alpha.2**, optional DSH Subagent and Codex Provider
 **0.1.6-alpha.2**, Cordis **4.0.3**, TypeScript **5.7.2** and @types/node **22.10.2**. No real
 model or credential was invoked by these checks.
 
@@ -11,12 +12,13 @@ model or credential was invoked by these checks.
 
 | Command/layer | Result | What it proves |
 |---|---|---|
-| `npm ci` | passed | Exact committed dependencies installed in an isolated worktree. |
+| `npm ci --ignore-scripts` | passed | Exact committed dependencies reconstructed before the final type check and test run. |
 | `npm run check` | passed | Strict TypeScript check with the above locked compiler/types. |
-| `npm test` | passed: 47 tests, 0 failures/skips | Original/domain/SQLite/Git-process fixtures, an explicit content-locked native `pagination-v1` lifecycle, real Cordis/ToolRuntime and DSH subagent/provider registration fixtures, plus injected HTTP tests. |
+| `npm test` | passed: 48 tests, 0 failures/skips | Original/domain/SQLite/Git-process fixtures, an explicit content-locked native `pagination-v1` lifecycle, real Cordis/ToolRuntime and DSH AgentLoop fixtures, DSH subagent/provider registration fixtures, plus injected HTTP tests. |
 | `npm run demo` | passed | Real failing baseline -> fixed candidate -> real TAP pass -> fixture review -> patch/report, awaiting human acceptance. The task ID and temporary paths are non-portable. |
 | `npm run test:pack` | passed | Tarball includes runtime/native/patch/skill/docs, imports without source tree; definition contract checks. |
 | Native DSH ToolRuntime fixture | passed | Real `@deepseek-ai/cordis` Context and `@deepseek-ai/dsh-tools` ToolRuntime registered, dispatched, rejected invalid schema input, unloaded and reloaded all DevKit tools. A separately double-opted-in `pagination-v1` policy ran create → reproduce → deterministic write → verify → report → cancel/resume boundary without starting a model. |
+| Offline DSH AgentLoop fixture | passed | A local finite `LlmAdapter` drove real `LlmRuntime`/`AgentLoop`/session/prompt/tool services. It selected `devkit_doctor`, persisted its rendered JSON as `tool/result`, fed that result into the next request, and propagated `{ kind: "user" }` cancellation while preserving already streamed text. The adapter has no endpoint, credential or network implementation. |
 | DSH Codex registry bridge fixture | passed | Real `SubagentRuntime` accepts the bounded/redacted bridge request, observes the exact parent/signal, and exercises missing-provider, failed result, unconfirmed teardown, and parent/candidate-workspace mismatch fail-closed paths. It uses a fixture provider only. |
 | Official Codex provider registration fixture | passed | Real `@deepseek-ai/dsh-subagent-codex` registers into a real `SubagentRuntime`; native `doctor` observes the provider. A deliberately throwing subprocess seam recorded zero starts, so no App Server/model process ran. |
 | `npm run test:codex-provider-profile` | passed | Packages the installed exact official provider, adds it to a disposable headless DSH profile, confirms its `subagent-codex` bundle row, and boots the profile twice. No task or `SubagentRuntime.start()` call is made. |
@@ -35,11 +37,11 @@ test uses an injected transport.
 
 | IDs | Status | Evidence / limit |
 |---|---|---|
-| A01 | partial | Exact DSH/Cordis/subagent npm packages, types, source paths, ToolRuntime/provider registration fixtures and official launcher profile boot checked; no real agent session. |
+| A01 | partial | Exact DSH/Cordis/agent-loop/subagent npm packages, types, source paths, ToolRuntime/provider registration fixtures, an offline real AgentLoop session and official launcher profile boot checked; no credentialed or remote model session. |
 | A02 | partial | Tarball/import and official profile install/config discovery passed; no production profile or live task. |
-| A03 | partial | Real published ToolRuntime dispatches doctor/create/status/run/report/cancel/resume; its content-locked `pagination-v1` fixture reaches final acceptance without a model, and doctor detects a registered official Codex provider. Real agent-session tool selection is unverified. |
-| A04 | partial | ToolRuntime unload/reload, owned cooperative shutdown, bridge disposal semantics and two launcher boots passed; actual provider-process cancellation remains unverified. |
-| A05 | partial | Strict nested input plus actual ToolRuntime invalid-schema rejection; launcher presentation/output path missing. |
+| A03 | partial | Real published ToolRuntime dispatches doctor/create/status/run/report/cancel/resume; its content-locked `pagination-v1` fixture reaches final acceptance without a model, and doctor detects a registered official Codex provider. An offline real AgentLoop session selects `devkit_doctor` and receives its rendered result; no live Provider is used. |
+| A04 | partial | ToolRuntime unload/reload, owned cooperative shutdown, bridge disposal semantics, offline AgentLoop cancellation and two launcher boots passed; actual provider-process cancellation remains unverified. |
+| A05 | partial | Strict nested input plus actual ToolRuntime invalid-schema rejection; the offline AgentLoop proves native schema presentation and rendered output replay, while a live launcher/provider presentation path remains unverified. |
 | B01–B04 | passed (unit/fixture) | Create, same/different idempotency keys, unsupported kinds. |
 | B05–B06 | partial | Missing/same-family adapters, unknown authority fields, bounded/redacted Codex task construction and parent/candidate cwd mismatch are blocked; full live/prompt-injection testing remains. |
 | C01–C03 | passed (fixture) | Dirty source preserved; path variants/symlinks rejected; persistent leases and concurrent run rejection. |
@@ -49,7 +51,7 @@ test uses an injected transport.
 | D07–D09 | passed (fixture) | Verifier mutation, binary/untracked/executable snapshot, incomplete acceptance coverage. |
 | E01–E06 | partial | Confirmed/unconfirmed P1, low-priority backlog, malformed/stale/failed HTTP reviews and shared retry budget tested; production evidence adjudication/optional-review behavior absent. |
 | E07–E09 | partial | Deterministic fingerprints, same-family block and stale snapshot checks; semantic dedup and full live identity checks remain. |
-| F01–F02 | partial | macOS process/cooperative cancellation, native fixture terminal cancellation, bridge disposal proof and unproven stop retaining the lease are tested; escaped hostile descendants require sandbox. |
+| F01–F02 | partial | macOS process/cooperative cancellation, native fixture terminal cancellation, offline AgentLoop stream cancellation/preserved text, bridge disposal proof and unproven stop retaining the lease are tested; escaped hostile descendants require sandbox. |
 | F03–F05 | blocked | Leases survive reopen and budgets remain, but explicit safe resume/crash reconciliation not implemented. |
 | F06–F07 | passed (unit) | Unsupported/corrupt stores preserved; failing event trigger rolls back task state. |
 | G01–G02 | passed (fixture) | Distinguishes final acceptance from unresolved human judgement. |
@@ -59,4 +61,4 @@ test uses an injected transport.
 | G07–G08 | partial | Bounds/redaction/env and an honest macOS-only matrix; regex is not complete secret detection. |
 | H01–H03 | blocked/fail-closed | No implicit model invocation/fallback; a registered provider still cannot bypass disabled mode or the workspace-binding guard; no live evidence. |
 
-47/47 does not mean the 56 acceptance IDs all pass. M0–M3 are explicitly incomplete.
+48/48 does not mean the 56 acceptance IDs all pass. M0–M3 are explicitly incomplete.

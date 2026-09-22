@@ -18,6 +18,12 @@ verification command. Its writer and reviewer are deterministic host code and st
 a shell nor a model. This is a regression fixture, not a configurable local sandbox or an
 authorization to point DevKit at another repository.
 
+`tests/native/agent-session.test.mjs` also contains an offline, in-process `LlmAdapter` used
+only by the test runner. It emits a finite, fixed stream to the real DSH AgentLoop so the
+session can select and render `devkit_doctor` and exercise cancellation. It has no plugin row,
+endpoint, credential lookup, subprocess or network implementation, and is not packaged as a
+runtime provider. It is compatibility evidence only; it cannot authorize live execution.
+
 ## Implemented controls
 
 Task inputs cannot set host policy, arbitrary commands, output paths, approval or readiness.

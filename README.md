@@ -3,7 +3,7 @@
 基于 DeepSeek Harness 的研发辅助插件，按既有 `dsh-devkit-handoff/` 计划迭代。
 
 **当前是首个可运行的控制面与 Bug 修复 fixture 增量，不是 M0–M3 全部完成，更不是生产自动修复系统。**
-真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。模型会话的工具选择、真实 Codex 进程、候选工作副本绑定和 OS 沙箱尚未完成联调。原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
+真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。另有测试专用离线 `LlmAdapter` 驱动真实 DSH AgentLoop，已验证会话内的工具选择、渲染结果回传和取消后的文本保留；它不含端点、凭据或网络代码。真实 Codex 进程、候选工作副本绑定和 OS 沙箱仍未完成联调。原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
 
 ## 已实现
 
@@ -57,4 +57,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-用非生产 DSH 模型 fixture 验证实际会话中的工具选择、呈现和取消；为独立候选副本建立可证明的 Codex session 工作目录与 OS 沙箱、网络/凭据边界；接入独立真实审核；完成安全恢复与审批凭据。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+为独立候选副本建立可证明的 Codex session 工作目录与 OS 沙箱、网络/凭据边界；接入独立真实审核；完成安全恢复与审批凭据。离线 AgentLoop fixture 已覆盖会话内的工具选择、呈现和取消，但不能替代真实 Provider 进程验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
