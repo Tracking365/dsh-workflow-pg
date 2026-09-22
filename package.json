@@ -3,15 +3,37 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "main": "native/index.mjs",
+  "exports": {
+    ".": "./native/index.mjs",
+    "./core": "./dist/src/index.js"
+  },
+  "files": [
+    "dist/src",
+    "native",
+    "cordis.patch.yml",
+    "skills",
+    "docs",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test --import tsx tests/**/*.test.ts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "demo": "npm run build && node scripts/demo.mjs",
+    "prepack": "npm run build",
+    "test:pack": "node scripts/check-pack.mjs"
   },
   "devDependencies": {
     "@types/node": "22.10.2",
-    "tsx": "4.19.2",
     "typescript": "5.7.2"
   }
 }
