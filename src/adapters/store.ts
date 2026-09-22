@@ -7,6 +7,8 @@ import { assertTransition } from "../domain/state-machine.js";
 
 type Patch = Partial<Pick<TaskRecord, "status" | "stage" | "retryCount" | "readyForAcceptance" | "reason" | "workspace" | "baseCommit" | "snapshotId" | "runId">>;
 export interface TaskEvent { seq: number; type: string; time: string; payload: unknown }
+/** A durable writer ownership record. It is intentionally retained after a crash. */
+export interface TaskLease { readonly resource: string; readonly runId: string; readonly acquiredAt: string }
 
 function sqlRow(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("STORE_CORRUPT");
@@ -50,6 +52,10 @@ export class TaskStore {
       }
       this.db.prepare("SELECT id FROM tasks LIMIT 1").all(); // Never replace a malformed store.
       this.db.exec("PRAGMA journal_mode=WAL;");
+      // A reopened host cannot prove that a process from the prior runtime has
+      // stopped. Preserve its lease and make the uncertainty visible instead
+      // of allowing the task to look runnable or silently reclaiming it.
+      this.recoverUnfinishedRuns();
     } catch (error) { this.db.close(); throw error; }
   }
   private transaction<T>(run: () => T): T {
@@ -96,6 +102,42 @@ export class TaskStore {
   update(id: string, expected: number, patch: Patch, type: string, payload: unknown = {}): TaskRecord {
     return this.transaction(() => this.change(id, expected, patch, type, payload));
   }
+  private leaseUnchecked(id: string): TaskLease | undefined {
+    const row = this.db.prepare("SELECT resource,run_id,acquired_at FROM leases WHERE task_id=?").get(id);
+    if (!row) return undefined;
+    const value = sqlRow(row);
+    return { resource: textColumn(value.resource), runId: textColumn(value.run_id), acquiredAt: textColumn(value.acquired_at) };
+  }
+  private recoverUnfinishedRuns(): void {
+    this.transaction(() => {
+      const rows = this.db.prepare("SELECT record FROM tasks").all();
+      for (const row of rows) {
+        let current: TaskRecord;
+        try {
+          current = parseRecord(sqlRow(row).record);
+        } catch (error) {
+          // Do not mutate or replace a corrupt row while opening the store.
+          // Its ordinary `get()` path still raises STORE_CORRUPT; skipping it
+          // here merely preserves the previous fail-closed diagnostic timing.
+          if (error instanceof DevkitError && error.code === "STORE_CORRUPT") continue;
+          throw error;
+        }
+        if (current.status !== "running" && current.status !== "cancelling") continue;
+        const lease = this.leaseUnchecked(current.taskId);
+        this.change(
+          current.taskId,
+          current.version,
+          { status: "interrupted", readyForAcceptance: false, reason: "restart_requires_reconciliation" },
+          "runtime_restarted",
+          {
+            ...(current.runId === undefined ? {} : { runId: current.runId }),
+            leaseRetained: lease !== undefined,
+            ...(lease === undefined ? { reason: "lease_missing" } : {}),
+          },
+        );
+      }
+    });
+  }
   acquire(id: string, resource: string, runId: string): TaskRecord {
     return this.transaction(() => {
       const current = this.get(id);
@@ -107,6 +149,41 @@ export class TaskStore {
   }
   release(id: string, runId: string): void { this.db.prepare("DELETE FROM leases WHERE task_id=? AND run_id=?").run(id, runId); }
   hasLease(id: string): boolean { return !!this.db.prepare("SELECT 1 FROM leases WHERE task_id=?").get(id); }
+  lease(id: string): TaskLease | undefined { this.get(id); return this.leaseUnchecked(id); }
+  /**
+   * The caller must have independently proved that the old writer stopped.
+   * Preserve its old workspace on disk and atomically queue a fresh clone;
+   * stale workspace/snapshot/run references must never become current proof.
+   */
+  requeueRecovered(id: string, expected: number, runId: string, payload: unknown): TaskRecord {
+    return this.transaction(() => {
+      const current = this.get(id);
+      if (current.version !== expected) throw new DevkitError("VERSION_CONFLICT");
+      if (current.status !== "interrupted") throw new DevkitError("RECOVERY_TASK_NOT_INTERRUPTED");
+      const lease = this.leaseUnchecked(id);
+      if (!lease || lease.runId !== runId) throw new DevkitError("RECOVERY_LEASE_CHANGED");
+      assertTransition(current.status, "queued");
+      const { workspace: previousWorkspace, snapshotId: previousSnapshotId, runId: _previousRunId, ...retained } = current;
+      const next: TaskRecord = {
+        ...retained,
+        status: "queued",
+        stage: "preflight",
+        readyForAcceptance: false,
+        reason: "recovery_authorized",
+        version: current.version + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      this.db.prepare("UPDATE tasks SET version=?,record=? WHERE id=? AND version=?").run(next.version, JSON.stringify(next), id, expected);
+      this.event(id, "recovery_requeued", {
+        ...((payload && typeof payload === "object" && !Array.isArray(payload)) ? payload as Record<string, unknown> : { payload }),
+        ...(previousWorkspace === undefined ? {} : { previousWorkspace }),
+        ...(previousSnapshotId === undefined ? {} : { previousSnapshotId }),
+        retryCount: current.retryCount,
+      });
+      this.db.prepare("DELETE FROM leases WHERE task_id=? AND run_id=?").run(id, runId);
+      return next;
+    });
+  }
   history(id: string): TaskEvent[] {
     this.get(id);
     return this.db.prepare("SELECT seq,type,time,payload FROM events WHERE task_id=? ORDER BY seq").all(id).map((value) => {

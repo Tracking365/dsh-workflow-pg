@@ -19,5 +19,8 @@ headless `--help` 启动；未传入任务、凭据或模型请求。真实官�
 Cordis fixture 中验证，且断言注册过程不启动子进程。`npm run test:codex-provider-profile`
 还会将该 provider tarball 装入一次性 headless profile、核对 patch 并两次启动；不调用
 `subagents.start`。真实 AgentLoop/Session 已在夹具中组成候选工作副本父会话，官方 provider
-的拒绝式 subprocess seam 也确认收到该 canonical cwd；seam 不执行进程。实际 Codex
-app-server、真实模型调用、网络/凭据边界与 OS 沙箱仍未验证；原生 `run` 默认保持阻塞。
+的拒绝式 subprocess seam 也确认收到该 canonical cwd；seam 不执行进程。另有 macOS 宿主夹具
+以真实 Seatbelt 包裹伪 package-shaped App Server，验证候选写入、受保护读取、宿主 home 目录内容
+不可枚举及 TCP/Unix socket 拒绝，并验证 App Server 子进程不会继承测试宿主的环境变量；它不运行实际 Codex。实际 Codex
+app-server 的内层隔离、真实模型调用、凭据 broker 与
+真实取消仍未验证；原生 `run` 默认保持阻塞。

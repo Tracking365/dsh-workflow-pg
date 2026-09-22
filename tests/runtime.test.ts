@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git, MacosSeatbeltCommandConfinement, seatbeltProfile } from "../src/index.js";
+import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git, MacosSeatbeltAppServerConfinement, MacosSeatbeltCommandConfinement, seatbeltProfile, seatbeltReadRestrictedProfile } from "../src/index.js";
 import { input, fixture, fixed, broken, adapters, finding, runCase } from "./helpers.js";
 
 test("strict contracts reject nested unknowns, duplicate ids and model permissions", () => {
@@ -37,6 +37,17 @@ test("trusted reviewer policy stores only a constrained credential reference", (
   assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", reviewer: { ...reviewer, endpoint: "http://example.invalid/chat/completions" } }), /INVALID_REVIEW_ENDPOINT/);
   assert.throws(() => validateHostPolicy({ ...f.policy, reviewer }), /LIVE_REVIEWER_NOT_ALLOWED_IN_FIXTURE/);
 });
+test("trusted App Server policy can only request the managed Seatbelt boundary outside fixtures", () => {
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const protectedRoot = path.join(f.root, "protected");
+  mkdirSync(protectedRoot);
+  const codexAppServer = { mode: "macos-seatbelt-v1", deniedReadRoots: [protectedRoot] };
+  assert.deepEqual(validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexAppServer }).codexAppServer, codexAppServer);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexAppServer: { ...codexAppServer, mode: "anything" } }), /INVALID_APP_SERVER_BOUNDARY/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexAppServer: { ...codexAppServer, deniedReadRoots: ["relative"] } }), /INVALID_APP_SERVER_BOUNDARY/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, codexAppServer }), /LIVE_APP_SERVER_BOUNDARY_NOT_ALLOWED_IN_FIXTURE/);
+});
 test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
   const f = fixture();
   const runtime = new Devkit(f.policy, createPaginationFixtureAdapters());
@@ -68,10 +79,16 @@ test("failed event write rolls back the state update", () => {
   assert.throws(() => store.update(a.taskId, 0, { status: "cancelled" }, "bad"), /event rejected/);
   assert.equal(store.get(a.taskId).status, "queued"); assert.equal(store.history(a.taskId).length, 1); db.close(); store.close();
 });
-test("persisted repository lease prevents a second writer after reopen", () => {
+test("store restart interrupts an unfinished writer, retains its lease, and prevents a second writer", () => {
   const f = fixture(), name = path.join(f.data, "tasks.sqlite"), a = new TaskStore(name), task1 = a.create(validateTaskInput(input), "p"), task2 = a.create(validateTaskInput(input), "p");
   a.acquire(task1.taskId, "repo", "run-1"); a.close();
-  const b = new TaskStore(name); assert.throws(() => b.acquire(task2.taskId, "repo", "run-2"), /WORKSPACE_BUSY/); b.release(task1.taskId, "wrong-owner"); assert.equal(b.hasLease(task1.taskId), true); b.close();
+  const b = new TaskStore(name);
+  assert.equal(b.get(task1.taskId).status, "interrupted");
+  assert.equal(b.get(task1.taskId).reason, "restart_requires_reconciliation");
+  assert.deepEqual(b.lease(task1.taskId), { resource: "repo", runId: "run-1", acquiredAt: b.lease(task1.taskId)!.acquiredAt });
+  assert.ok(b.history(task1.taskId).some((event) => event.type === "runtime_restarted" && (event.payload as { leaseRetained?: boolean }).leaseRetained === true));
+  assert.throws(() => b.acquire(task2.taskId, "repo", "run-2"), /WORKSPACE_BUSY/);
+  b.release(task1.taskId, "wrong-owner"); assert.equal(b.hasLease(task1.taskId), true); b.close();
 });
 test("unsupported migrations and corrupt stores preserve original bytes", () => {
   const f = fixture(); mkdirSync(f.data); const name = path.join(f.data, "tasks.sqlite"), db = new DatabaseSync(name); db.exec("PRAGMA user_version=99"); db.close();
@@ -98,6 +115,20 @@ test("Seatbelt command confinement builds a narrow profile and never falls back 
   assert.match(profile, /\(deny file-read\*/);
   assert.match(profile, /\(deny network\*\)/);
   assert.throws(() => seatbeltProfile({ writableRoots: [f.repo], deniedReadRoots: [f.root] }), /SANDBOX_ROOTS_OVERLAP/);
+  const readRestricted = seatbeltReadRestrictedProfile({
+    writableRoots: [f.repo],
+    deniedReadRoots: [protectedRoot],
+    ambientDeniedReadRoots: [f.root],
+    allowedReadRoots: [f.repo],
+  });
+  assert.match(readRestricted, /\(deny file-read\*/);
+  assert.match(readRestricted, /\(allow file-read\*/);
+  assert.throws(() => seatbeltReadRestrictedProfile({
+    writableRoots: [f.repo],
+    deniedReadRoots: [protectedRoot],
+    ambientDeniedReadRoots: [f.root],
+    allowedReadRoots: [protectedRoot],
+  }), /SANDBOX_ROOTS_OVERLAP/);
 
   const unavailable = new MacosSeatbeltCommandConfinement({
     deniedReadRoots: [protectedRoot],
@@ -110,6 +141,72 @@ test("Seatbelt command confinement builds a narrow profile and never falls back 
     reason: process.platform === "darwin" ? "SANDBOX_EXEC_UNAVAILABLE" : "MACOS_SEATBELT_REQUIRES_DARWIN",
   });
   await assert.rejects(unavailable.prepare([process.execPath, "--version"], f.repo, new AbortController().signal), /SANDBOX_UNAVAILABLE/);
+});
+test("Seatbelt App Server boundary requires async preflight, an exact provider launch, and managed-range proof", async () => {
+  const f = fixture();
+  const protectedRoot = path.join(f.root, "protected");
+  mkdirSync(protectedRoot);
+  const inheritedName = "DEVKIT_APP_SERVER_PARENT_INJECTION_TEST";
+  const priorInherited = process.env[inheritedName];
+  process.env[inheritedName] = "must-not-reach-app-server";
+  let captured: { argv: readonly string[]; env: NodeJS.ProcessEnv | undefined } | undefined;
+  let rangeExited = false;
+  try {
+    const boundary = new MacosSeatbeltAppServerConfinement({
+      subprocess: {
+        spawn(spec) {
+          captured = { argv: spec.argv, env: spec.env };
+          return {
+            stdin: undefined, stdout: undefined, stderr: undefined, control: undefined, collected: {}, done: Promise.resolve({}),
+            terminate() {}, async waitForExit() { return rangeExited; },
+          };
+        },
+      },
+      deniedReadRoots: [protectedRoot],
+      sandboxExec: path.join(f.root, "sandbox-exec"),
+      status: async () => ({
+        state: "supported", mechanism: "macos-seatbelt", platform: "darwin", enforcement: "full", filesystem: "full", network: "full", credentialReads: "configured-roots",
+        probe: { workspaceWriteAllowed: true, controlWriteDenied: true, protectedReadDenied: true, networkDenied: true, unixSocketDenied: true },
+      }),
+    });
+    const wrapper = path.join(f.root, "node_modules", "@openai", "codex", "bin", "codex.js");
+    mkdirSync(path.dirname(wrapper), { recursive: true });
+    writeFileSync(wrapper, "// fake package-local wrapper\n");
+    const request = {
+      argv: [process.execPath, wrapper, "app-server", "--stdio"], cwd: f.repo,
+      stdio: { stdin: "pipe" as const, stdout: "pipe" as const, stderr: "pipe" as const }, graceMs: 3000, env: {},
+    };
+    assert.throws(() => boundary.spawn(request), /APP_SERVER_BOUNDARY_NOT_PREPARED/);
+    const prepared = await boundary.prepare(f.repo, new AbortController().signal);
+    const lookalike = path.join(f.root, "lookalike", "@openai", "codex", "bin", "codex.js");
+    mkdirSync(path.dirname(lookalike), { recursive: true });
+    writeFileSync(lookalike, "// not installed below node_modules\n");
+    assert.throws(() => boundary.spawn({ ...request, argv: [process.execPath, lookalike, "app-server", "--stdio"] }), /APP_SERVER_BOUNDARY_REQUEST_REJECTED/);
+    const child = boundary.spawn(request);
+    assert.equal(captured?.argv[0], path.join(f.root, "sandbox-exec"));
+    assert.match(String(captured?.argv[2]), /\(deny network\*\)/);
+    assert.equal(captured?.argv.at(-1), "--stdio");
+    const temporary = captured?.env?.TMPDIR;
+    assert.equal(typeof temporary, "string");
+    assert.equal(captured?.env?.HOME, temporary);
+    assert.equal(captured?.env?.PATH, "/usr/bin:/bin:/usr/sbin:/sbin");
+    assert.equal(captured?.env?.[inheritedName], undefined);
+    assert.equal(Object.hasOwn(captured?.env ?? {}, inheritedName), true, "the explicit tombstone must override DSH's scrubbed parent base");
+    for (const name of ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY", "NODE_USE_ENV_PROXY"]) {
+      assert.equal(captured?.env?.[name], undefined);
+      assert.equal(Object.hasOwn(captured?.env ?? {}, name), true, `the DSH proxy overlay ${name} must be tombstoned`);
+    }
+    assert.equal(existsSync(temporary!), true);
+    assert.throws(() => boundary.spawn(request), /APP_SERVER_BOUNDARY_ALREADY_SPAWNED/);
+    assert.equal(await prepared.release(true), false, "a provider result alone cannot prove its managed range is empty");
+    rangeExited = true;
+    assert.equal(await child.waitForExit(), true);
+    assert.equal(await prepared.release(true), true);
+    assert.equal(existsSync(temporary!), false);
+  } finally {
+    if (priorInherited === undefined) delete process.env[inheritedName];
+    else process.env[inheritedName] = priorInherited;
+  }
 });
 test("snapshots cover untracked binary content, executable mode and policy changes", () => {
   const f = fixture(), a = snapshot(f.repo, "base", "policy", "plan"); writeFileSync(path.join(f.repo, "src/binary"), Buffer.from([0, 255, 1]));
@@ -163,6 +260,90 @@ test("frozen test modification and out-of-scope changes cannot pass", async () =
 test("failed tests share a finite durable retry budget", async () => {
   let calls = 0; const f = await runCase(() => adapters({ execute: async () => { calls++; return { stopped: true, runId: "unfixed" }; } }));
   try { assert.equal(calls, 3); assert.equal(f.result.retryCount, 2); assert.equal(f.result.reason, "retry_limit"); assert.equal(f.result.readyForAcceptance, false); assert.throws(() => f.runtime.resume(f.task.taskId), /RECOVERY_REQUIRES_OPERATOR/); assert.equal(f.runtime.status(f.task.taskId).retryCount, 2); } finally { await f.runtime.close(); }
+});
+test("host-authorized recovery preserves an interrupted candidate and retries only from a fresh clone", async () => {
+  const f = fixture();
+  let interruptedWorkspace = "";
+  let inspectedWorkspaceState: string | undefined;
+  const interrupted = new Devkit(f.policy, {
+    ...adapters({ execute: async request => {
+      interruptedWorkspace = request.workspace;
+      writeFileSync(path.join(request.workspace, "src/page.mjs"), fixed);
+      return { stopped: false, runId: "writer-without-stop-proof" };
+    } }),
+    recoveryAuthority: {
+      async authorizeRecovery(inspection) {
+        inspectedWorkspaceState = inspection.workspaceState;
+        return {
+          action: "retry-from-base",
+          taskId: inspection.task.taskId,
+          runId: inspection.lease.runId,
+          fingerprint: inspection.fingerprint,
+          approvalId: "fixture-operator-recovery-approval",
+          oldWriterStopped: true,
+        };
+      },
+    },
+  });
+  const task = interrupted.create(input);
+  try {
+    const first = await interrupted.run(task.taskId);
+    assert.equal(first.status, "interrupted");
+    assert.equal(interrupted.store.hasLease(task.taskId), true);
+    const inspection = interrupted.resume(task.taskId);
+    assert.equal(inspection.workspaceState, "changed", "a partial writer result is never reused in place");
+    assert.equal(inspection.expectedSnapshotId === inspection.observedSnapshotId, false);
+    const requeued = await interrupted.recover(task.taskId);
+    assert.equal(inspectedWorkspaceState, "changed");
+    assert.equal(requeued.status, "queued");
+    assert.equal(requeued.workspace, undefined);
+    assert.equal(requeued.snapshotId, undefined);
+    assert.equal(requeued.runId, undefined);
+    assert.equal(requeued.retryCount, 0);
+    assert.equal(interrupted.store.hasLease(task.taskId), false);
+    assert.equal(existsSync(interruptedWorkspace), true, "recovery retains the interrupted candidate for human inspection");
+    const recoveryEvent = interrupted.store.history(task.taskId).find((event) => event.type === "recovery_requeued");
+    assert.equal(JSON.stringify(recoveryEvent?.payload).includes("fixture-operator-recovery-approval"), false, "task history must retain an approval audit hash, not a raw approval artifact");
+  } finally {
+    await interrupted.close();
+  }
+  const resumed = new Devkit(f.policy, adapters());
+  try {
+    const final = await resumed.run(task.taskId);
+    assert.equal(final.readyForAcceptance, true);
+    assert.notEqual(final.workspace, interruptedWorkspace, "the fresh attempt must not reuse the interrupted workspace");
+    assert.ok(resumed.store.history(task.taskId).some((event) => event.type === "recovery_requeued"));
+  } finally {
+    await resumed.close();
+  }
+});
+test("recovery keeps the lease if the workspace changes while an operator decision is pending", async () => {
+  const f = fixture();
+  const runtime = new Devkit(f.policy, {
+    ...adapters({ execute: async () => ({ stopped: false, runId: "writer-without-stop-proof" }) }),
+    recoveryAuthority: {
+      async authorizeRecovery(inspection) {
+        writeFileSync(path.join(inspection.task.workspace!, "src/page.mjs"), fixed);
+        return {
+          action: "retry-from-base",
+          taskId: inspection.task.taskId,
+          runId: inspection.lease.runId,
+          fingerprint: inspection.fingerprint,
+          approvalId: "fixture-stale-recovery-approval",
+          oldWriterStopped: true,
+        };
+      },
+    },
+  });
+  try {
+    const task = runtime.create(input);
+    assert.equal((await runtime.run(task.taskId)).status, "interrupted");
+    await assert.rejects(runtime.recover(task.taskId), /RECOVERY_STATE_CHANGED/);
+    assert.equal(runtime.status(task.taskId).status, "interrupted");
+    assert.equal(runtime.store.hasLease(task.taskId), true);
+  } finally {
+    await runtime.close();
+  }
 });
 test("unconfirmed P1 requests human judgement without claiming readiness", async () => {
   const f = await runCase(() => adapters({ review: async r => ({ snapshotId: r.snapshotId, reviewerId: "fixture", provider: "fixture", model: "fixture", findings: [finding()] }) }));

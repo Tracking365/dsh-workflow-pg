@@ -41,6 +41,11 @@ Sources:
   defaults to `codex`, has no optional start capabilities, and owns the package-local Codex
   App Server process. Its declared patch registers the provider only; registration does not
   start Codex.
+- OpenAI’s current [Codex App Server protocol](https://developers.openai.com/zh-Hans/docs/app-server):
+  stdio uses JSONL; App Server approvals are bidirectional JSON-RPC requests; `workspaceWrite`
+  supports restricted read roots in the current protocol. The locked DSH provider exposes only
+  its own older, narrow permission mapping, so this project does not infer those richer controls
+  are available through it.
 - https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/core/tools/package.json
   identifies `@deepseek-ai/dsh-tools` **0.1.6-alpha.2** and its Cordis peer range.
 - https://deepseek-harness.github.io/deepseek-harness/develop/basic/publish
@@ -108,12 +113,34 @@ The second native ToolRuntime fixture mounts the actual published
 throwing subprocess seam. It proves that the official provider registers as `codex` and that
 `devkit_doctor` observes its published capability shape, while asserting zero subprocess
 starts. Under the locked provider version, doctor also reads its declared `permissionMode`,
-explicit provider env and metadata. Only `approve-for-me` with `env: {}` can construct the
-future candidate executor, because the same provider's wire fixture observes its explicit
-`sandbox: "workspace-write"` request. `never` remains visible but is not writer-eligible;
+explicit provider env and metadata. `approve-for-me` with `env: {}` is only protocol-eligible,
+because the same provider's wire fixture observes its explicit `sandbox: "workspace-write"`
+request. Its locked wire declines/cancels App Server approvals and has no authenticated host
+approval transport; alongside the missing credential broker, that keeps native executor launch
+false. `never` remains visible but is not writer-eligible;
 `dangerously-bypass-approvals-and-sandbox`, unrecognized/missing/unreadable metadata, and a
 nonempty explicit env are blocked. This is host-plane configuration enforcement, not an App
 Server or model-session test and not an OS sandbox.
+
+When a disabled host policy explicitly supplies `codexAppServer`, native `apply()` instead
+mounts that exact official provider below a root `subprocess` isolation scope owned by DevKit.
+The scoped service is a `MacosSeatbeltAppServerConfinement`: after its functional host probe it
+accepts only canonical `node <package-local node_modules/@openai/codex/codex.js> app-server --stdio`,
+tombstones every ambient child-environment key before restoring a fixed system
+path/locale/private home and non-interactive Git settings, blocks ambient home/current-user
+temporary/volume and known configuration roots, and invokes the raw DSH subprocess service through
+`sandbox-exec`.
+The candidate executor preflights this boundary before creating its candidate
+parent and refuses to discard its private state until the provider's `waitForExit()` proof. The
+locked provider source discards the `registerProvider()` disposer, so DevKit gives it a private
+facade that captures and releases that root-owned registry effect; the native fixture unloads and
+reloads the managed provider to prove no stale `codex` entry survives. The real provider’s
+in-memory JSON-RPC cancellation fixture runs through this seam. A separate host
+fixture launches a fake package-shaped wrapper through actual Seatbelt and proves candidate-only
+writes, configured protected-root denial, host-home directory-data denial, denied loopback TCP
+and denied Unix socket access.
+Neither fixture starts Codex or connects a model: the profile intentionally denies all network
+and the provider has no credential broker.
 
 `npm run test:codex-provider-profile` adds a profile-level counterpart. It packages the
 already-installed exact provider, adds the tarball to a new headless `DSH_HOME`, confirms the
@@ -158,15 +185,19 @@ that package-manager-only warning.
 
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
 registration, launcher lifecycle, declared permission/environment guard, official provider wire
-cancellation, one real official-provider cwd/write behavior, and a standalone macOS Seatbelt
-command boundary are now covered. The wire fixture proves the locked provider maps
-`approve-for-me` to an explicit `sandbox: "workspace-write"`; native code requires that mode
-and an empty explicit provider env before it will construct a future writer. This is a provider
-protocol fact, not OS containment. The Seatbelt boundary has a host fixture proving candidate-only
-writes, configured protected-root read denial and no network, but is not yet composed around the
-official provider. The candidate-parent path has not run inside a deployed live task.
-Cancellation through an actual App Server process, provider-specific wire edge cases, an App
-Server sandbox composition, and a credential broker remain unverified.
+cancellation, one real official-provider cwd/write behavior, a standalone macOS Seatbelt command
+boundary, and an App-Server-shaped Seatbelt launch boundary are now covered. The wire fixture
+proves the locked provider maps `approve-for-me` to an explicit `sandbox: "workspace-write"`;
+native code reports that mode and an empty explicit provider env as protocol eligibility only;
+the missing credential broker and authenticated approval bridge keep executor launch disabled.
+This is a provider protocol fact, not OS containment. The App Server boundary has
+host evidence only for a fake wrapper; it denies candidate-external writes, configured reads,
+host-home directory data, TCP and Unix sockets, then removes private state after managed-range
+proof. It is not a complete macOS file-read whitelist. The candidate-parent
+path has not run inside a deployed live task. Cancellation through an actual App Server process,
+provider-specific wire edge cases, restricted-read/approval controls exposed through the locked
+provider, an independently isolated credential broker, and live reviewer behavior remain
+unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
 the live gate.
@@ -178,7 +209,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test`, `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (74 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` all passed on 2026-09-22. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

@@ -4,6 +4,7 @@ export * from "./domain/security.js";
 export * from "./adapters/store.js";
 export * from "./adapters/process.js";
 export * from "./adapters/macos-seatbelt.js";
+export * from "./adapters/macos-seatbelt-app-server.js";
 export * from "./adapters/workspace.js";
 export * from "./adapters/review.js";
 export * from "./adapters/executor-dsh-codex.js";

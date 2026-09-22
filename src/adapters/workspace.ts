@@ -16,9 +16,16 @@ export function resolveBase(repository: string, ref = "HEAD"): string {
   if (/^(120000|160000) /m.test(tree)) throw new DevkitError("UNSUPPORTED_LINK_OR_SUBMODULE");
   return sha;
 }
-export function prepareWorkspace(repository: string, root: string, taskId: string, baseCommit: string): string {
+/**
+ * Each durable run receives a new owned clone. In particular, recovery never
+ * reuses an interrupted candidate whose final writer state cannot be inferred
+ * safely after a host restart.
+ */
+export function prepareWorkspace(repository: string, root: string, taskId: string, baseCommit: string, runId: string): string {
   mkdirSync(root, { recursive: true, mode: 0o700 });
-  const work = resolveRealWithin(root, taskId);
+  const taskRoot = resolveRealWithin(root, taskId);
+  mkdirSync(taskRoot, { recursive: true, mode: 0o700 });
+  const work = resolveRealWithin(taskRoot, runId);
   if (realpathSync(repository) === realpathSync(root) || realpathSync(root).startsWith(`${realpathSync(repository)}${path.sep}`)) throw new DevkitError("WORKSPACE_INSIDE_SOURCE");
   git(root, ["clone", "--no-local", "--no-checkout", "--", realpathSync(repository), work]);
   git(work, ["checkout", "--detach", baseCommit]);

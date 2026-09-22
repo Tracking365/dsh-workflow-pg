@@ -41,6 +41,8 @@ hashes and verification/review evidence bind to the candidate snapshot. A model 
 writes the SQLite store through an exposed tool. Store events and state changes commit
 in one transaction; database files use 0600. Persistent leases have no automatic TTL
 reclaim. A failed stop proof retains the lease and yields `interrupted`, not `cancelled`.
+On store reopen, prior `running`/`cancelling` tasks are atomically marked `interrupted` while
+their lease remains held.
 
 Shell interpolation is not used. Child processes get an environment allowlist, not model
 keys or NODE_OPTIONS. Output and model context are bounded. The HTTP reviewer has no tools,
@@ -50,12 +52,32 @@ Regex redaction is best-effort, not a complete secret detector. Do not pass real
 
 `MacosSeatbeltCommandConfinement` is an optional host-owned boundary for trusted command
 plans. It first creates a disposable probe that must prove a candidate write succeeds while a
-control write, a configured protected-root read, and loopback network access fail. Only after
-that proof does it wrap a command in `sandbox-exec`: writes are limited to the candidate and a
-private temporary directory, protected roots are unreadable, and all network access is denied.
-It has no unconfined fallback and `runCommand()` disposes the private temporary root after the
-managed child settles. This is real macOS Seatbelt evidence for that command path, not a claim
-about every host or the Codex App Server. Protected-root denial is not a credential broker.
+control write, a configured protected-root read, loopback TCP, and a local Unix-socket connection
+fail. Only after that proof does it wrap a command in `sandbox-exec`: writes are limited to the
+candidate and a private temporary directory, protected roots are unreadable, and all network
+access is denied. It has no unconfined fallback and `runCommand()` disposes the private temporary
+root after the managed child settles.
+
+`MacosSeatbeltAppServerConfinement` applies the same functional probe to a separately scoped,
+DevKit-owned official provider. It permits exactly one prepared, canonical package-local
+`node …/node_modules/@openai/codex/bin/codex.js app-server --stdio` launch per candidate,
+supplies a fresh private home and temporary roots, tombstones every inherited DSH
+child-environment name, then restores only a fixed system path, locale and non-interactive Git
+settings. That prevents ambient Node loader, dynamic-linker, shell-startup, proxy and host-config
+variables from re-entering the child.
+
+Its App Server profile additionally denies reads from the invoking home, current-user temporary
+area, shared temporary roots, mounted volumes and existing host configuration/cache roots before
+restoring only the candidate, private boundary state, current Node runtime directory and the
+canonical installed package tree. Node needs ancestor `lstat` calls to load an absolute module, so
+the profile grants metadata—not directory data—on only those exact ancestors. Explicit configured
+protected roots are emitted as final denials and cannot be reallowed. The host fixture proves a
+fake package-shaped wrapper can write only the candidate, cannot read the synthetic protected root
+or enumerate the host home, and cannot reach TCP or Unix sockets. It does not launch an actual
+Codex binary, access a login, or prove the inner App Server sandbox. This is a narrowed ambient
+data boundary, not a universal macOS read allowlist; system and other non-enumerated roots may
+still be readable. The profile deliberately denies all network, so it cannot provide model
+connectivity. Protected-root denial is not a credential broker.
 
 The dormant DSH Codex bridge delegates only through the official `subagents` registry; it
 does not invoke a Codex CLI or HTTP endpoint itself. Its candidate-session composition layer
@@ -67,11 +89,13 @@ official provider owns its child cwd and has no public per-run cwd override. A m
 bridge waits for both the child run and candidate parent handle to dispose; an unproven teardown
 retains the writer lease. Under the exact locked official provider, the native boundary also
 reads its declared `permissionMode`, explicit provider environment and metadata. It refuses a
-full-access, unknown/unreadable, or nonempty-env provider. It reserves future writer construction
-for the locked provider's `approve-for-me` mode with `env: {}`, because the tested official wire
-then sends `sandbox: "workspace-write"`; `never` remains observable but is not writer-eligible.
-This configuration guard does not make either provider mode an OS sandbox. The default disabled
-policy rejects a task before this composition is invoked.
+full-access, unknown/unreadable, or nonempty-env provider. `approve-for-me` with `env: {}` is
+reported only as a provider protocol prerequisite because the tested wire sends
+`sandbox: "workspace-write"`; `never` remains observable but is not writer-eligible. The locked
+wire explicitly lacks an authenticated interactive-approval bridge, and the boundary lacks a
+credential broker, so native writer launch remains false even when both the provider and boundary
+are mounted. This configuration guard does not make either provider mode an OS sandbox. The
+default disabled policy rejects a task before this composition is invoked.
 
 A host policy may configure the separate DeepSeek reviewer with an HTTPS completions endpoint,
 fixed model and a `DSH_DEVKIT_*` credential environment-variable name. The secret itself is not
@@ -82,9 +106,13 @@ provider's explicit environment. This is a configuration boundary only: no live 
 adapter and does not implement organization signing/hooks policies. No host commit/push/
 merge/deployment feature is exposed. Patches remain local and fixture evidence stays labeled.
 
-`accept()` is a trusted in-process API, not a model tool. Its actor string is NOT an
-authentication mechanism. Only trusted host code may invoke it; authenticated approval
-capabilities, binding to operator identity and expiration remain unimplemented.
+`accept()` and `recover()` are trusted in-process APIs, not model tools. `recover()` requires a
+host `RecoveryAuthority` to bind an approval to the task, retained run lease and a recovery
+facts fingerprint, prove the old writer stopped, and survive a second inspection before it
+queues a fresh clone. The interrupted clone is never deleted or reused. The shipped native DSH
+plugin does not configure that authority; task history stores only a hash of its approval audit
+artifact, never the raw artifact. Its callback seam is not itself an authentication
+mechanism; authenticated identity, expiry and approval presentation remain unimplemented.
 
 ## Explicit gaps / do not relax these to make tests pass
 
@@ -93,12 +121,17 @@ capabilities, binding to operator identity and expiration remain unimplemented.
   JSON-RPC peer also proves the official provider sends an interrupt and waits for managed
   teardown after a published-turn cancellation. One separately authorized temporary run started
   an App Server and observed that cwd and a single exact scoped write. A separate host-level
-  Seatbelt fixture proves a reusable command wrapper can deny configured reads, external writes
-  and network. It does not yet wrap the App Server, supply an isolated model credential, or
-  prove App Server cancellation. The separate readonly reviewer has a lazy host configuration
+  Seatbelt fixture proves both the trusted-command wrapper and the exact App-Server-shaped launch
+  wrapper can deny configured reads, external writes, TCP, and Unix sockets. The latter uses a
+  fake wrapper only; it does not supply an isolated model credential or prove actual-App-Server
+  cancellation. The App Server profile blocks the main ambient home/config/cache locations and
+  has a host test for non-enumerability, but it is not yet a complete file-read whitelist or a
+  separately killable execution VM. The separate readonly reviewer has a lazy host configuration
   path but no live behavior evidence. There is no credential broker; live runs remain blocked.
-* No automatic crash recovery or PID/lease reclamation. `resume` raises
-  `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
+* Recovery never infers quiescence from a PID, timeout or lease age. The durable restart and
+  host-only fresh-clone path are fixture-tested, but the shipped native DSH profile has no
+  authenticated `RecoveryAuthority`; public `resume` therefore still raises
+  `RECOVERY_REQUIRES_OPERATOR` and cannot release a retained lease.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.
 * Reproduction uses a frozen, trusted Node TAP test plan. A general-purpose expected failure
   signature and newly proposed regression overlay are not implemented. A failed assertion

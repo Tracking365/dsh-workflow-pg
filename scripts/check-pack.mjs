@@ -1,12 +1,21 @@
 // Artifact-content and import smoke test only; NOT a native DSH runtime test.
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import assert from "node:assert/strict";
 const dir = mkdtempSync(path.join(os.tmpdir(), "devkit-pack-"));
-const packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dir], { encoding: "utf8" }));
+const npmCache = mkdtempSync(path.join(os.tmpdir(), "devkit-pack-npm-cache-"));
+let packed;
+try {
+  packed = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dir], {
+    encoding: "utf8",
+    env: { ...process.env, NPM_CONFIG_CACHE: npmCache },
+  }));
+} finally {
+  rmSync(npmCache, { recursive: true, force: true, maxRetries: 1 });
+}
 const archive = path.join(dir, packed[0].filename);
 execFileSync("tar", ["-xzf", archive, "-C", dir]);
 const root = path.join(dir, "package");

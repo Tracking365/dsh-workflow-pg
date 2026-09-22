@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DeepSeekReviewer, Devkit, DevkitError, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { DeepSeekReviewer, Devkit, DevkitError, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -74,7 +74,7 @@ function codexProviderMetadata(provider) {
   }
 }
 
-export function codexProviderStatus(ctx) {
+export function codexProviderStatus(ctx, managed) {
   const subagents = ctx.get("subagents");
   if (!subagents || typeof subagents.getProvider !== "function") {
     return { state: "unconfigured", reason: "DSH_SUBAGENT_SERVICE_MISSING" };
@@ -106,6 +106,19 @@ export function codexProviderStatus(ctx) {
   const writerSandbox = permissionMode === CODEX_WORKSPACE_WRITE_MODE
     ? "workspace-write-provider-declared"
     : "unverified";
+  const managedBoundary = managed !== undefined && managed.provider === provider;
+  // The locked provider maps `approve-for-me` to `auto_review`, but its wire
+  // implementation explicitly declines/cancels every App Server approval and
+  // exposes no authenticated host approval transport. A declared workspace
+  // sandbox is useful protocol evidence, not sufficient authority to start a
+  // production writer. Keep the executor dormant until both that bridge and a
+  // credential broker are independently implemented and verified.
+  const writerProtocolEligible = permissionMode === CODEX_WORKSPACE_WRITE_MODE;
+  const writerLaunchBlockers = [
+    ...(managedBoundary ? [] : ["CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT"]),
+    "CODEX_CREDENTIAL_BROKER_UNIMPLEMENTED",
+    "CODEX_INTERACTIVE_APPROVAL_BROKER_UNIMPLEMENTED",
+  ];
   return {
     state: "supported",
     provider: "codex",
@@ -116,7 +129,13 @@ export function codexProviderStatus(ctx) {
     // The provider wire emits an explicit `sandbox: workspace-write` only for
     // approve-for-me. This remains a provider-declared prerequisite, not an
     // OS-boundary claim or a live enablement switch.
-    writerLaunchEligible: permissionMode === CODEX_WORKSPACE_WRITE_MODE,
+    writerProtocolEligible,
+    writerLaunchEligible: false,
+    writerLaunchBlockers,
+    nativeExecutorEligible: false,
+    appServerBoundary: managedBoundary
+      ? { state: "configured", id: managed.boundary.id, credentialBroker: "unimplemented" }
+      : { state: "unconfigured", reason: "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT" },
     liveValidated: false,
     inheritsParentContext: metadata.inheritsParentContext,
     capabilities: {
@@ -129,12 +148,95 @@ export function codexProviderStatus(ctx) {
   };
 }
 
-export function codexExecutor(ctx, exec) {
+export function codexExecutor(ctx, exec, managed) {
   const subagents = ctx.get("subagents");
   const agents = ctx.get("agents");
-  const status = codexProviderStatus(ctx);
-  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || status.state !== "supported" || status.writerLaunchEligible !== true) return undefined;
-  return createDshCandidateWorkspaceCodexExecutor({ agents, subagents, parent: exec.agent });
+  const status = codexProviderStatus(ctx, managed);
+  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || status.state !== "supported" || status.nativeExecutorEligible !== true || managed === undefined) return undefined;
+  return createDshCandidateWorkspaceCodexExecutor({ agents, subagents, parent: exec.agent, appServerBoundary: managed.boundary });
+}
+
+/**
+ * The published provider captures `ctx.subprocess` when it is mounted. Cordis
+ * scopes let DevKit install that exact provider under a narrow, host-owned
+ * service without changing the host's ordinary subprocess capability.
+ */
+async function installManagedCodexProvider(ctx, policy) {
+  if (policy.codexAppServer === undefined) return undefined;
+  // The native plugin itself is a child fiber. Mount the provider below the
+  // Cordis root so its registry entry is visible to the host's SubagentRuntime;
+  // only its subprocess service is given a new isolated scope.
+  const host = ctx.root;
+  const subagents = host.get("subagents");
+  const subprocess = host.get("subprocess");
+  if (!subagents || typeof subagents.getProvider !== "function") throw new DevkitError("CODEX_MANAGED_SUBAGENT_SERVICE_MISSING");
+  if (!subprocess || typeof subprocess.spawn !== "function") throw new DevkitError("CODEX_MANAGED_SUBPROCESS_SERVICE_MISSING");
+  if (subagents.getProvider("codex") !== undefined) throw new DevkitError("CODEX_MANAGED_PROVIDER_CONFLICT");
+  const boundary = new MacosSeatbeltAppServerConfinement({
+    subprocess,
+    deniedReadRoots: policy.codexAppServer.deniedReadRoots,
+  });
+  // The published provider currently does not retain the registration
+  // disposer returned by `subagents.registerProvider()`. Give it a tiny,
+  // private facade so DevKit can retain and release that root-owned effect on
+  // unload instead of leaving a stale `codex` registry entry behind.
+  const scoped = host.isolate("subprocess").isolate("subagents");
+  let releaseSubprocess;
+  let releaseSubagents;
+  let releaseProviderRegistration;
+  let providerFiber;
+  try {
+    releaseSubprocess = scoped.provide("subprocess", boundary);
+    releaseSubagents = scoped.provide("subagents", {
+      registerProvider(provider) {
+        if (!provider || provider.name !== "codex" || releaseProviderRegistration !== undefined) throw new DevkitError("CODEX_MANAGED_PROVIDER_REGISTRATION_REJECTED");
+        const release = subagents.registerProvider(provider);
+        let released = false;
+        releaseProviderRegistration = async () => {
+          if (released) return;
+          await release();
+          released = true;
+        };
+        return releaseProviderRegistration;
+      },
+    });
+    const officialProvider = await import("@deepseek-ai/dsh-subagent-codex");
+    providerFiber = scoped.plugin(officialProvider, {
+      providerName: "codex",
+      env: {},
+      permissionMode: CODEX_WORKSPACE_WRITE_MODE,
+      disposeGraceMs: 3000,
+    });
+    await providerFiber;
+    const provider = subagents.getProvider("codex");
+    if (!provider || releaseProviderRegistration === undefined) throw new DevkitError("CODEX_MANAGED_PROVIDER_MISSING");
+    return {
+      provider,
+      boundary,
+      async dispose() {
+        try {
+          await providerFiber.dispose();
+        } finally {
+          try {
+            await releaseProviderRegistration();
+          } finally {
+            try {
+              await releaseSubagents();
+            } finally {
+              await releaseSubprocess();
+            }
+          }
+        }
+      },
+    };
+  } catch (error) {
+    try { await providerFiber?.dispose(); } catch { /* preserve the startup failure */ }
+    try { await releaseProviderRegistration?.(); } catch { /* preserve the startup failure */ }
+    try { await releaseSubagents?.(); } catch { /* preserve the startup failure */ }
+    try { await releaseSubprocess?.(); } catch { /* preserve the startup failure */ }
+    if (error instanceof DevkitError) throw error;
+    throw new DevkitError("CODEX_MANAGED_PROVIDER_START_FAILED");
+  }
 }
 
 /** Pure definition factory permits contract tests without pretending to run a DSH Context. */
@@ -164,7 +266,7 @@ export function toolDefinitions(runtime, services = {}) {
   ];
 }
 
-export function apply(ctx, config = {}) {
+export async function apply(ctx, config = {}) {
   const options = object(config, ["configPath", "fixtureDriver"]);
   const configPath = options.configPath ?? process.env.DSH_DEVKIT_CONFIG;
   const fixtureDriver = options.fixtureDriver === undefined ? undefined : text(options.fixtureDriver, "fixtureDriver", 100);
@@ -194,21 +296,40 @@ export function apply(ctx, config = {}) {
     credential: () => process.env[policy.reviewer.credentialEnv] ?? "",
   });
   const runtime = new Devkit(policy, policy.executionMode === "fixture" ? createPaginationFixtureAdapters() : reviewer === undefined ? {} : { reviewer });
-  ctx.on("dispose", () => runtime.close());
-  for (const definition of toolDefinitions(runtime, {
-    doctor: () => ({
-      ...runtime.doctor(),
-      nativeRuntime: {
-        state: "supported",
-        registry: "dsh-tools",
-        fixtureMode: policy.executionMode === "fixture" ? PAGINATION_FIXTURE_DRIVER : "disabled",
-        reviewer: policy.reviewer === undefined
-          ? { state: "unconfigured" }
-          : { state: "configured", provider: "deepseek", model: policy.reviewer.model, credential: "deferred" },
-      },
-      codexSubagent: codexProviderStatus(ctx),
-    }),
-    fixtureMode: policy.executionMode === "fixture",
-    executor: policy.executionMode === "fixture" ? undefined : exec => codexExecutor(ctx, exec),
-  })) ctx.tools.register(definition);
+  let managed;
+  try {
+    managed = await installManagedCodexProvider(ctx, policy);
+  } catch (error) {
+    await runtime.close();
+    throw error;
+  }
+  const dispose = async () => {
+    try {
+      await runtime.close();
+    } finally {
+      await managed?.dispose();
+    }
+  };
+  try {
+    for (const definition of toolDefinitions(runtime, {
+      doctor: () => ({
+        ...runtime.doctor(),
+        nativeRuntime: {
+          state: "supported",
+          registry: "dsh-tools",
+          fixtureMode: policy.executionMode === "fixture" ? PAGINATION_FIXTURE_DRIVER : "disabled",
+          reviewer: policy.reviewer === undefined
+            ? { state: "unconfigured" }
+            : { state: "configured", provider: "deepseek", model: policy.reviewer.model, credential: "deferred" },
+        },
+        codexSubagent: codexProviderStatus(ctx, managed),
+      }),
+      fixtureMode: policy.executionMode === "fixture",
+      executor: policy.executionMode === "fixture" ? undefined : exec => codexExecutor(ctx, exec, managed),
+    })) ctx.tools.register(definition);
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+  return dispose;
 }

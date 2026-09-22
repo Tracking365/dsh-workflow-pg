@@ -31,6 +31,29 @@ export interface DshCandidateWorkspaceCodexExecutorOptions {
   readonly subagents: Pick<SubagentRuntime, "getProvider" | "start">;
   readonly parent: Agent;
   readonly providerName?: string;
+  /**
+   * Optional host-owned App Server boundary. It must be prepared before the
+   * official provider can synchronously request its child process, and it
+   * keeps its private state when process quiescence cannot be proven.
+   */
+  readonly appServerBoundary?: AppServerExecutionBoundary;
+}
+
+/** One per-run capability granted only after host-side App Server preflight. */
+export interface PreparedAppServerExecution {
+  /**
+   * Release temporary boundary state after the provider's lifecycle settles.
+   * `false` retains the state because a writer may still exist.
+   */
+  release(stopped: boolean): Promise<boolean> | boolean;
+}
+
+/**
+ * A synchronous provider spawn seam needs asynchronous host preflight first.
+ * This contract intentionally has no task-controlled fields or fallback.
+ */
+export interface AppServerExecutionBoundary {
+  prepare(workspace: string, signal: AbortSignal): Promise<PreparedAppServerExecution>;
 }
 
 function clipped(value: string, limit: number): string {
@@ -113,6 +136,14 @@ function candidateParentOptions(request: ExecutionRequest, parent: Agent): Creat
     },
     signal: request.signal,
   };
+}
+
+async function releaseBoundary(boundary: PreparedAppServerExecution, stopped: boolean): Promise<boolean> {
+  try {
+    return await boundary.release(stopped);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -218,13 +249,28 @@ export class DshCandidateWorkspaceCodexExecutor implements CodeExecutor {
       return { stopped: true, failure: "CODEX_PROVIDER_UNAVAILABLE" };
     }
 
+    let boundary: PreparedAppServerExecution | undefined;
+    if (this.options.appServerBoundary !== undefined) {
+      try {
+        boundary = await this.options.appServerBoundary.prepare(request.workspace, request.signal);
+      } catch {
+        return request.signal.aborted
+          ? { stopped: true, failure: "CANCELLED" }
+          : { stopped: true, failure: "CODEX_APP_SERVER_BOUNDARY_UNAVAILABLE" };
+      }
+    }
+
     let handle: AgentHandle;
     try {
       handle = await this.options.agents.create(parentOptions);
     } catch {
-      return request.signal.aborted
+      const result = request.signal.aborted
         ? { stopped: true, failure: "CANCELLED" }
         : { stopped: true, failure: "CODEX_PARENT_SESSION_START_FAILED" };
+      if (boundary !== undefined && !await releaseBoundary(boundary, result.stopped)) {
+        return { stopped: false, failure: "CODEX_APP_SERVER_BOUNDARY_RELEASE_UNCONFIRMED" };
+      }
+      return result;
     }
 
     let result: ExecutionResult;
@@ -241,11 +287,20 @@ export class DshCandidateWorkspaceCodexExecutor implements CodeExecutor {
     try {
       await handle.dispose();
     } catch {
-      return {
+      result = {
         stopped: false,
         ...(result.runId === undefined ? {} : { runId: result.runId }),
         failure: "CODEX_PARENT_SESSION_DISPOSAL_UNCONFIRMED",
       };
+    }
+    if (boundary !== undefined) {
+      if (!await releaseBoundary(boundary, result.stopped)) {
+        return {
+          stopped: false,
+          ...(result.runId === undefined ? {} : { runId: result.runId }),
+          failure: "CODEX_APP_SERVER_BOUNDARY_RELEASE_UNCONFIRMED",
+        };
+      }
     }
     return result;
   }

@@ -264,7 +264,15 @@ test("real official Codex provider is visible to the native doctor without start
       permissionEnforcement: "provider-declared",
       explicitEnvironment: "empty",
       writerSandbox: "unverified",
+      writerProtocolEligible: false,
       writerLaunchEligible: false,
+      writerLaunchBlockers: [
+        "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT",
+        "CODEX_CREDENTIAL_BROKER_UNIMPLEMENTED",
+        "CODEX_INTERACTIVE_APPROVAL_BROKER_UNIMPLEMENTED",
+      ],
+      nativeExecutorEligible: false,
+      appServerBoundary: { state: "unconfigured", reason: "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT" },
       liveValidated: false,
       inheritsParentContext: false,
       capabilities: {
@@ -322,7 +330,7 @@ test("native doctor configures an independent reviewer without probing its crede
   }
 });
 
-test("native doctor requires the official provider's explicit workspace-write mode before constructing a future writer", async () => {
+test("native doctor treats an externally mounted workspace-write provider as non-executable until DevKit owns its boundary", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-workspace-write-"));
   const configPath = path.join(root, "policy.json");
   writeFileSync(configPath, JSON.stringify({
@@ -358,7 +366,15 @@ test("native doctor requires the official provider's explicit workspace-write mo
       permissionEnforcement: "provider-declared",
       explicitEnvironment: "empty",
       writerSandbox: "workspace-write-provider-declared",
-      writerLaunchEligible: true,
+      writerProtocolEligible: true,
+      writerLaunchEligible: false,
+      writerLaunchBlockers: [
+        "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT",
+        "CODEX_CREDENTIAL_BROKER_UNIMPLEMENTED",
+        "CODEX_INTERACTIVE_APPROVAL_BROKER_UNIMPLEMENTED",
+      ],
+      nativeExecutorEligible: false,
+      appServerBoundary: { state: "unconfigured", reason: "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT" },
       liveValidated: false,
       inheritsParentContext: false,
       capabilities: {
@@ -370,12 +386,79 @@ test("native doctor requires the official provider's explicit workspace-write mo
       },
     });
     const executor = native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: root } } } });
-    assert.equal(executor?.family, "codex-app-server");
+    assert.equal(executor, undefined);
     assert.equal(spawnCalls, 0);
   } finally {
     await mounted.dispose();
     await toolsFiber.dispose();
     await providerFiber.dispose();
+    await disposeSubprocess();
+    await disposeAgents();
+    await subagentsFiber.dispose();
+    await disposePrompt();
+  }
+});
+
+test("native mounts the official workspace-write provider in an isolated DevKit subprocess scope", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-managed-codex-provider-"));
+  const protectedRoot = path.join(root, "protected");
+  mkdirSync(protectedRoot);
+  const configPath = path.join(root, "policy.json");
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    codexAppServer: { mode: "macos-seatbelt-v1", deniedReadRoots: [protectedRoot] },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const subagentsFiber = ctx.plugin(SubagentRuntime, { maxDepth: 1, maxActiveSubagents: 1 });
+  await subagentsFiber;
+  const disposeAgents = ctx.provide("agents", { create() { throw new Error("doctor fixture must not create a candidate parent"); } });
+  let spawnCalls = 0;
+  const disposeSubprocess = ctx.provide("subprocess", {
+    spawn() { spawnCalls += 1; throw new Error("managed registration must not start Codex"); },
+  });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  let mounted = ctx.plugin(plugin, { configPath });
+  let reloaded;
+
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.codexSubagent.appServerBoundary, {
+      state: "configured", id: "macos-seatbelt-app-server-v1", credentialBroker: "unimplemented",
+    });
+    assert.equal(doctor.value.codexSubagent.permissionMode, "approve-for-me");
+    assert.equal(doctor.value.codexSubagent.writerProtocolEligible, true);
+    assert.equal(doctor.value.codexSubagent.writerLaunchEligible, false);
+    assert.deepEqual(doctor.value.codexSubagent.writerLaunchBlockers, [
+      "CODEX_CREDENTIAL_BROKER_UNIMPLEMENTED",
+      "CODEX_INTERACTIVE_APPROVAL_BROKER_UNIMPLEMENTED",
+    ]);
+    assert.equal(doctor.value.codexSubagent.nativeExecutorEligible, false);
+    assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: root } } } }), undefined, "the exported helper does not receive the native-private boundary capability");
+    assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: root } } } }, {
+      provider: ctx.get("subagents").getProvider("codex"),
+      boundary: { id: "test-boundary" },
+    }), undefined, "even a managed boundary cannot start a writer until the credential and approval brokers exist");
+    assert.equal(spawnCalls, 0);
+    await mounted.dispose();
+    mounted = undefined;
+    assert.equal(ctx.get("subagents").getProvider("codex"), undefined, "disposing DevKit removes its root-scoped managed provider");
+    reloaded = ctx.plugin(plugin, { configPath });
+    await reloaded;
+    const reloadedDoctor = await call(ctx.tools, "devkit_doctor", {}, 2);
+    assert.equal(reloadedDoctor.value.codexSubagent.appServerBoundary.state, "configured", "the isolated provider can be mounted again without a stale registry entry");
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await reloaded?.dispose();
+    await mounted?.dispose();
+    await toolsFiber.dispose();
     await disposeSubprocess();
     await disposeAgents();
     await subagentsFiber.dispose();

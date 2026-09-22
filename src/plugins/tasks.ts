@@ -1,20 +1,27 @@
 import path from "node:path";
-import { mkdirSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { DevkitError, hash, validateTaskInput, type TaskRecord } from "../contracts/task.js";
+import { DevkitError, hash, object, text, validateTaskInput, type TaskRecord } from "../contracts/task.js";
 import { validateHostPolicy } from "../contracts/policy.js";
 import { evidenceGate, type CheckEvidence } from "../domain/state-machine.js";
 import { resolveRealWithin, redact } from "../domain/security.js";
-import { TaskStore } from "../adapters/store.js";
+import { TaskStore, type TaskLease } from "../adapters/store.js";
 import { runCommand, type CommandConfinement, type CommandSpec } from "../adapters/process.js";
 import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, exportPatch, writeArtifact, type Snapshot } from "../adapters/workspace.js";
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
 export interface RepositoryPolicy { path: string; allowedPaths: string[]; protectedPaths: string[] }
 /** Trusted host metadata only; the credential value remains outside JSON policy. */
 export interface ReviewerPolicy { endpoint: string; model: string; credentialEnv: string; timeoutMs?: number }
+/**
+ * Opt-in registration shape for the provider mounted through DevKit's own
+ * scoped subprocess boundary. It remains unable to reach a model until a
+ * separately implemented credential broker is available.
+ */
+export interface CodexAppServerPolicy { mode: "macos-seatbelt-v1"; deniedReadRoots: string[] }
 export interface HostPolicy {
   dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
   reviewer?: ReviewerPolicy;
+  codexAppServer?: CodexAppServerPolicy;
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }
@@ -25,12 +32,48 @@ export interface ExecutionRequest {
 /** An executor always reports whether its owned writer has reached quiescence. */
 export interface ExecutionResult { readonly stopped: boolean; readonly runId?: string; readonly failure?: string }
 export interface CodeExecutor { readonly family: string; readonly kind: "fixture" | "live"; execute(request: ExecutionRequest): Promise<ExecutionResult> }
+export type RecoveryWorkspaceState = "not-created" | "unchanged" | "changed" | "untracked" | "unreadable";
+/**
+ * Read-only facts assembled by DevKit before a trusted host decides whether an
+ * interrupted task may receive a new candidate clone. `changed` and
+ * `untracked` are intentionally not treated as a safe in-place resume.
+ */
+export interface RecoveryInspection {
+  readonly task: TaskRecord;
+  readonly lease: TaskLease;
+  readonly policyCurrent: boolean;
+  readonly baseAvailable: boolean;
+  readonly expectedSnapshotId?: string;
+  readonly observedSnapshotId?: string;
+  readonly workspaceState: RecoveryWorkspaceState;
+  /** Binds an authorization to exact durable facts and prevents TOCTOU reuse. */
+  readonly fingerprint: string;
+}
+/** Host-only approval result; this shape is never exposed as a DSH tool input. */
+export interface RecoveryAuthorization {
+  readonly action: "retry-from-base";
+  readonly taskId: string;
+  readonly runId: string;
+  readonly fingerprint: string;
+  readonly approvalId: string;
+  readonly oldWriterStopped: true;
+}
+/**
+ * Integrate an authenticated operator control plane here. A plain callback is
+ * a test seam, not an identity system; native DSH wiring deliberately leaves
+ * it unconfigured until such a control plane exists.
+ */
+export interface RecoveryAuthority {
+  authorizeRecovery(inspection: RecoveryInspection): Promise<unknown>;
+}
 export interface RuntimeAdapters {
   executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean>;
   /** Host-owned command boundary; a missing confinement must not be treated as a live sandbox. */
   commandConfinement?: CommandConfinement;
   /** Trusted host-only guard run before any fixture verification command. */
   workspaceGuard?: { readonly id: string; assertWorkspace(workspace: string): void };
+  /** Host-only recovery authorization; not available to normal DSH tool calls. */
+  recoveryAuthority?: RecoveryAuthority;
 }
 interface ActiveRun { controller: AbortController; done: Promise<TaskRecord> }
 
@@ -105,7 +148,9 @@ export class Devkit {
       const task = this.store.get(id), checks = this.policy.verificationProfiles[task.input.verificationProfile]!;
       if (!checks.length || new Set(checks.map((c) => c.id)).size !== checks.length || task.input.acceptanceCriteria.some((c) => !checks.some((v) => v.criteria.includes(c.id)))) throw new DevkitError("ACCEPTANCE_MAPPING_MISSING");
       const base = task.baseCommit ?? resolveBase(repo.path, task.input.baseRef), planHash = hash(checks);
-      const work = prepareWorkspace(repo.path, path.join(this.policy.dataRoot, "workspaces"), id, base);
+      const activeRunId = this.store.get(id).runId;
+      if (activeRunId === undefined) throw new DevkitError("RUN_ID_MISSING");
+      const work = prepareWorkspace(repo.path, path.join(this.policy.dataRoot, "workspaces"), id, base, activeRunId);
       set({ workspace: work, baseCommit: base }, "workspace_created", { base });
       if (this.adapters.workspaceGuard) {
         this.adapters.workspaceGuard.assertWorkspace(work);
@@ -114,6 +159,7 @@ export class Devkit {
       const capture = () => snapshot(work, base, this.policyHash, planHash);
       stage("context");
       const baseline = capture(), protectedHash = frozenHash(baseline, repo.protectedPaths);
+      set({}, "baseline_snapshot", baseline);
       if (!repo.protectedPaths.length || !baseline.files.some((f) => repo.protectedPaths.some((p) => f.path === p || (p.endsWith("/") && f.path.startsWith(p))))) throw new DevkitError("FROZEN_TESTS_MISSING");
       const ensureFrozen = (candidate: Snapshot) => {
         if (frozenHash(candidate, repo.protectedPaths) !== protectedHash) throw new DevkitError("FROZEN_TESTS_CHANGED");
@@ -220,10 +266,119 @@ export class Devkit {
     if (current.status === "cancelled" || current.status === "completed") return current;
     return this.store.update(id, current.version, { status: "cancelled", readyForAcceptance: false, reason: "cancelled" }, "cancelled");
   }
-  resume(id: string): never {
-    this.store.get(id);
-    // Never infer quiescence from a PID/heartbeat or reset the durable retry budget.
-    throw new DevkitError("RECOVERY_REQUIRES_OPERATOR", "Reconcile persisted leases and workspace before creating a new task; automatic resume is not yet implemented.");
+  private expectedRecoverySnapshot(id: string): string | undefined {
+    for (const event of [...this.store.history(id)].reverse()) {
+      if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) continue;
+      const payload = event.payload as Record<string, unknown>;
+      const fromSnapshotId = payload.snapshotId;
+      const fromSnapshot = (event.type === "baseline_snapshot" || event.type === "snapshot") ? payload.id : undefined;
+      const value = typeof fromSnapshotId === "string" ? fromSnapshotId : fromSnapshot;
+      if (typeof value === "string" && /^[0-9a-f]{64}$/.test(value)) return value;
+    }
+    return undefined;
+  }
+  private inspectRecovery(id: string): RecoveryInspection {
+    if (this.active.has(id)) throw new DevkitError("TASK_ALREADY_RUNNING");
+    const task = this.store.get(id);
+    if (task.status !== "interrupted") throw new DevkitError("RECOVERY_TASK_NOT_INTERRUPTED");
+    const lease = this.store.lease(id);
+    if (!lease || !task.runId || lease.runId !== task.runId) throw new DevkitError("RECOVERY_LEASE_CHANGED");
+    const repository = this.policy.repositories[task.input.repositoryRef];
+    const checks = repository === undefined ? undefined : this.policy.verificationProfiles[task.input.verificationProfile];
+    let repositoryCurrent = false;
+    try { repositoryCurrent = repository !== undefined && realpathSync(repository.path) === lease.resource; } catch { /* inspected below as unavailable */ }
+    const policyCurrent = task.policyHash === this.policyHash && repositoryCurrent && checks !== undefined;
+    let baseAvailable = false;
+    let planHash: string | undefined;
+    if (policyCurrent && task.baseCommit !== undefined && checks !== undefined && checks.length > 0) {
+      try {
+        baseAvailable = resolveBase(repository!.path, task.baseCommit) === task.baseCommit;
+        planHash = hash(checks);
+      } catch { /* a lost base commit is a hard recovery preflight failure */ }
+    }
+    const expectedSnapshotId = this.expectedRecoverySnapshot(id);
+    let observedSnapshotId: string | undefined;
+    let workspaceState: RecoveryWorkspaceState;
+    if (task.workspace === undefined) {
+      workspaceState = "not-created";
+    } else if (!baseAvailable || planHash === undefined || !existsSync(task.workspace)) {
+      workspaceState = "unreadable";
+    } else {
+      try {
+        const workspacesRoot = realpathSync(path.join(this.policy.dataRoot, "workspaces"));
+        const workspace = realpathSync(task.workspace);
+        const relative = path.relative(workspacesRoot, workspace);
+        if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new DevkitError("RECOVERY_WORKSPACE_NOT_OWNED");
+        observedSnapshotId = snapshot(workspace, task.baseCommit!, this.policyHash, planHash).id;
+        workspaceState = expectedSnapshotId === undefined
+          ? "untracked"
+          : observedSnapshotId === expectedSnapshotId ? "unchanged" : "changed";
+      } catch {
+        workspaceState = "unreadable";
+      }
+    }
+    const fingerprint = hash({
+      taskId: task.taskId,
+      taskVersion: task.version,
+      runId: lease.runId,
+      leaseResource: lease.resource,
+      leaseAcquiredAt: lease.acquiredAt,
+      policyCurrent,
+      baseAvailable,
+      ...(expectedSnapshotId === undefined ? {} : { expectedSnapshotId }),
+      ...(observedSnapshotId === undefined ? {} : { observedSnapshotId }),
+      workspaceState,
+    });
+    return {
+      task: structuredClone(task), lease, policyCurrent, baseAvailable,
+      ...(expectedSnapshotId === undefined ? {} : { expectedSnapshotId }),
+      ...(observedSnapshotId === undefined ? {} : { observedSnapshotId }),
+      workspaceState, fingerprint,
+    };
+  }
+  private validateRecoveryAuthorization(value: unknown, inspection: RecoveryInspection): RecoveryAuthorization {
+    const authorization = object(value, ["action", "taskId", "runId", "fingerprint", "approvalId", "oldWriterStopped"]);
+    if (authorization.action !== "retry-from-base" || authorization.oldWriterStopped !== true) throw new DevkitError("RECOVERY_AUTHORIZATION_REJECTED");
+    const taskId = text(authorization.taskId, "recovery.taskId", 100);
+    const runId = text(authorization.runId, "recovery.runId", 100);
+    const fingerprint = text(authorization.fingerprint, "recovery.fingerprint", 100);
+    const approvalId = text(authorization.approvalId, "recovery.approvalId", 200);
+    if (taskId !== inspection.task.taskId || runId !== inspection.lease.runId || fingerprint !== inspection.fingerprint) throw new DevkitError("RECOVERY_AUTHORIZATION_STALE");
+    return { action: "retry-from-base", taskId, runId, fingerprint, approvalId, oldWriterStopped: true };
+  }
+  /** Read only. Normal tool callers cannot release a retained writer lease. */
+  resume(id: string): RecoveryInspection {
+    if (this.adapters.recoveryAuthority === undefined) {
+      this.store.get(id);
+      throw new DevkitError("RECOVERY_REQUIRES_OPERATOR", "An authenticated host recovery authority must prove the old writer stopped before a fresh candidate can be queued.");
+    }
+    return this.inspectRecovery(id);
+  }
+  /**
+   * Trusted host-only recovery action. It preserves the interrupted clone,
+   * invalidates its current snapshot reference, and queues a new clone from
+   * the frozen base only after a bound authorization and a second inspection.
+   */
+  async recover(id: string): Promise<TaskRecord> {
+    if (this.closing) throw new DevkitError("PLUGIN_STOPPING");
+    const authority = this.adapters.recoveryAuthority;
+    if (authority === undefined) throw new DevkitError("RECOVERY_REQUIRES_OPERATOR");
+    const before = this.inspectRecovery(id);
+    if (!before.policyCurrent) throw new DevkitError("POLICY_CHANGED");
+    if (!before.baseAvailable) throw new DevkitError("RECOVERY_PREFLIGHT_FAILED");
+    const authorization = this.validateRecoveryAuthorization(await authority.authorizeRecovery(structuredClone(before)), before);
+    const after = this.inspectRecovery(id);
+    if (after.fingerprint !== before.fingerprint) throw new DevkitError("RECOVERY_STATE_CHANGED");
+    return this.store.requeueRecovered(id, after.task.version, authorization.runId, {
+      // An authority may internally use a signed or otherwise sensitive
+      // approval artifact. Persist only its stable audit hash, never the raw
+      // artifact, in task history/report output.
+      approvalHash: hash(authorization.approvalId),
+      authorizationFingerprint: authorization.fingerprint,
+      workspaceState: after.workspaceState,
+      ...(after.expectedSnapshotId === undefined ? {} : { expectedSnapshotId: after.expectedSnapshotId }),
+      ...(after.observedSnapshotId === undefined ? {} : { observedSnapshotId: after.observedSnapshotId }),
+    });
   }
   report(id: string): object {
     return JSON.parse(redact(JSON.stringify({ schemaVersion: 1, task: this.store.get(id), events: this.store.history(id), evidenceMode: this.policy.executionMode, liveValidated: false }))) as object;

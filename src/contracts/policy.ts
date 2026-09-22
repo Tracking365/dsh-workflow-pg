@@ -5,7 +5,7 @@ import type { CommandSpec } from "../adapters/process.js";
 
 /** This schema belongs to the trusted host, never to a model-facing tool. */
 export function validateHostPolicy(value: unknown): HostPolicy {
-  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
+  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "codexAppServer", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
   const dataRoot = text(p.dataRoot, "dataRoot");
   const executionMode = String(p.executionMode);
   if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(executionMode)) throw new DevkitError("INVALID_HOST_POLICY");
@@ -27,6 +27,15 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     if (!/^DSH_DEVKIT_[A-Z0-9_]{1,80}$/.test(credentialEnv)) throw new DevkitError("INVALID_REVIEW_CREDENTIAL_ENV");
     if (r.timeoutMs !== undefined && (!Number.isSafeInteger(r.timeoutMs) || Number(r.timeoutMs) < 1000 || Number(r.timeoutMs) > 120000)) throw new DevkitError("INVALID_REVIEW_TIMEOUT");
     reviewer = { endpoint, model: text(r.model, "reviewer.model", 200), credentialEnv, ...(r.timeoutMs === undefined ? {} : { timeoutMs: Number(r.timeoutMs) }) };
+  }
+  let codexAppServer: HostPolicy["codexAppServer"];
+  if (p.codexAppServer !== undefined) {
+    if (executionMode === "fixture") throw new DevkitError("LIVE_APP_SERVER_BOUNDARY_NOT_ALLOWED_IN_FIXTURE");
+    const c = object(p.codexAppServer, ["mode", "deniedReadRoots"]);
+    if (c.mode !== "macos-seatbelt-v1") throw new DevkitError("INVALID_APP_SERVER_BOUNDARY");
+    const deniedReadRoots = strings(c.deniedReadRoots, "codexAppServer.deniedReadRoots", true);
+    if (!deniedReadRoots.length || deniedReadRoots.length > 20 || deniedReadRoots.some((root) => !path.isAbsolute(root))) throw new DevkitError("INVALID_APP_SERVER_BOUNDARY");
+    codexAppServer = { mode: "macos-seatbelt-v1", deniedReadRoots };
   }
   const map = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("INVALID_HOST_POLICY");
@@ -54,6 +63,7 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     executionMode: executionMode as HostPolicy["executionMode"],
     ...(fixtureDriver === undefined ? {} : { fixtureDriver: fixtureDriver as "pagination-v1" }),
     ...(reviewer === undefined ? {} : { reviewer }),
+    ...(codexAppServer === undefined ? {} : { codexAppServer }),
     repositories,
     verificationProfiles,
     maxRetries: Number(p.maxRetries),

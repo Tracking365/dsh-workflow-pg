@@ -18,11 +18,27 @@ export interface SeatbeltProfilePolicy {
   readonly deniedReadRoots: readonly string[];
 }
 
+/**
+ * A deliberately ordered read overlay for a known child program.  Ambient
+ * roots are broad host locations (for example the invoking user's home) that
+ * may contain the candidate or a trusted runtime.  They are denied first and
+ * only the exact child roots are added back afterwards.  Explicit protected
+ * roots remain final denials and therefore cannot be silently overridden.
+ */
+export interface SeatbeltReadRestrictedProfilePolicy extends SeatbeltProfilePolicy {
+  readonly ambientDeniedReadRoots: readonly string[];
+  readonly allowedReadRoots: readonly string[];
+  /** Exact ancestor metadata lookups required to resolve an allowed program. */
+  readonly allowedReadMetadataRoots?: readonly string[];
+}
+
 export interface SeatbeltProbeFacts {
   readonly workspaceWriteAllowed: boolean;
   readonly controlWriteDenied: boolean;
   readonly protectedReadDenied: boolean;
   readonly networkDenied: boolean;
+  /** A local broker socket must not become a network-bypass capability. */
+  readonly unixSocketDenied: boolean;
 }
 
 export type SeatbeltCapability =
@@ -99,6 +115,45 @@ export function seatbeltProfile(policy: SeatbeltProfilePolicy): string {
   return [
     "(version 1)",
     "(allow default)",
+    ...deniedReadRoots.map((root) => `(deny file-read* (subpath ${sbplString(root)}))`),
+    "(deny file-write*)",
+    `(allow file-write* ${writable})`,
+    "(deny network*)",
+  ].join(" ");
+}
+
+/**
+ * Retain the portable command profile above for trusted fixed command plans.
+ * A known App Server launch can do better: block user-home and temporary
+ * ambient reads even when its candidate, package installation or Node runtime
+ * happens to live below one of those parents.  Seatbelt processes rules in
+ * declaration order for this matching selector, so the narrow read allows
+ * intentionally follow ambient denials, while explicit protected roots are
+ * emitted last and can never be reallowed accidentally.
+ */
+export function seatbeltReadRestrictedProfile(policy: SeatbeltReadRestrictedProfilePolicy): string {
+  const writableRoots = uniqueDirectories(policy.writableRoots, "writableRoots");
+  const deniedReadRoots = uniqueDirectories(policy.deniedReadRoots, "deniedReadRoots");
+  const ambientDeniedReadRoots = uniqueDirectories(policy.ambientDeniedReadRoots, "ambientDeniedReadRoots");
+  const allowedReadRoots = uniqueDirectories([...writableRoots, ...policy.allowedReadRoots], "allowedReadRoots");
+  const allowedReadMetadataRoots = uniqueDirectories(policy.allowedReadMetadataRoots ?? [], "allowedReadMetadataRoots");
+  if (!writableRoots.length) throw new DevkitError("INVALID_SANDBOX_ROOT", "writableRoots");
+  for (const protectedRoot of deniedReadRoots) {
+    if (allowedReadRoots.some((allowedRoot) => overlaps(protectedRoot, allowedRoot))) {
+      throw new DevkitError("SANDBOX_ROOTS_OVERLAP", protectedRoot);
+    }
+  }
+  const writable = [
+    `(literal ${sbplString("/dev/null")})`,
+    ...writableRoots.map((root) => `(subpath ${sbplString(root)})`),
+  ].join(" ");
+  const allowedRead = allowedReadRoots.map((root) => `(subpath ${sbplString(root)})`).join(" ");
+  return [
+    "(version 1)",
+    "(allow default)",
+    ...ambientDeniedReadRoots.map((root) => `(deny file-read* (subpath ${sbplString(root)}))`),
+    ...allowedReadMetadataRoots.map((root) => `(allow file-read-metadata (literal ${sbplString(root)}))`),
+    ...(allowedRead ? [`(allow file-read* ${allowedRead})`] : []),
     ...deniedReadRoots.map((root) => `(deny file-read* (subpath ${sbplString(root)}))`),
     "(deny file-write*)",
     `(allow file-write* ${writable})`,
@@ -213,6 +268,12 @@ const CHILD_PROBE = String.raw`
     socket.on("connect", () => { clearTimeout(timer); socket.destroy(); resolve(false); });
     socket.on("error", () => { clearTimeout(timer); resolve(true); });
   });
+  result.unixSocketDenied = await new Promise((resolve) => {
+    const socket = net.createConnection({ path: process.env.DEVKIT_SEATBELT_UNIX_SOCKET });
+    const timer = setTimeout(() => { socket.destroy(); resolve(true); }, 1000);
+    socket.on("connect", () => { clearTimeout(timer); socket.destroy(); resolve(false); });
+    socket.on("error", () => { clearTimeout(timer); resolve(true); });
+  });
   console.log(JSON.stringify(result));
 `;
 
@@ -221,13 +282,14 @@ function parseProbe(stdout: string): SeatbeltProbeFacts | undefined {
     const value: unknown = JSON.parse(stdout.trim());
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const result = value as Record<string, unknown>;
-    const names = ["workspaceWriteAllowed", "controlWriteDenied", "protectedReadDenied", "networkDenied"] as const;
+    const names = ["workspaceWriteAllowed", "controlWriteDenied", "protectedReadDenied", "networkDenied", "unixSocketDenied"] as const;
     if (names.some((name) => typeof result[name] !== "boolean")) return undefined;
     return {
       workspaceWriteAllowed: result.workspaceWriteAllowed as boolean,
       controlWriteDenied: result.controlWriteDenied as boolean,
       protectedReadDenied: result.protectedReadDenied as boolean,
       networkDenied: result.networkDenied as boolean,
+      unixSocketDenied: result.unixSocketDenied as boolean,
     };
   } catch {
     return undefined;
@@ -244,9 +306,17 @@ async function listenLoopback(server: ReturnType<typeof createServer>): Promise<
   return address.port;
 }
 
+async function listenUnix(server: ReturnType<typeof createServer>, socket: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socket, () => resolve());
+  });
+}
+
 /**
- * Test the actual runner and the three boundaries required for untrusted code:
- * a permitted workspace write, denied control/credential reads, and no network.
+ * Test the actual runner and the four boundaries required for untrusted code:
+ * a permitted workspace write, denied control/credential reads, and denied
+ * TCP plus Unix-socket connectivity.
  * It has no model, external endpoint, or user credential dependency.
  */
 export async function probeMacosSeatbelt(sandboxExec = DEFAULT_SANDBOX_EXEC): Promise<SeatbeltCapability> {
@@ -268,17 +338,26 @@ export async function probeMacosSeatbelt(sandboxExec = DEFAULT_SANDBOX_EXEC): Pr
   }
 
   const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-seatbelt-probe-"));
+  // Darwin's sockaddr_un has a short path limit. Keep the broker probe path
+  // visibly short instead of making capability reporting depend on the host's
+  // often-long per-user temporary directory.
+  const unixRoot = mkdtempSync("/tmp/dshdk-sb-");
   const workspace = path.join(root, "workspace");
   const control = path.join(root, "control");
   const secret = path.join(root, "secret");
   const temporary = path.join(root, "temporary");
   const server = createServer();
+  const unixServer = createServer();
   let connections = 0;
+  let unixConnections = 0;
   server.on("connection", (socket) => { connections += 1; socket.destroy(); });
+  unixServer.on("connection", (socket) => { unixConnections += 1; socket.destroy(); });
   try {
     for (const directory of [workspace, control, secret, temporary]) mkdirSync(directory, { mode: 0o700 });
     writeFileSync(path.join(secret, "credential.txt"), "seatbelt-probe-secret", { mode: 0o600 });
     const port = await listenLoopback(server);
+    const unixSocket = path.join(unixRoot, "broker.sock");
+    await listenUnix(unixServer, unixSocket);
     const profile = seatbeltProfile({ writableRoots: [workspace, temporary], deniedReadRoots: [secret] });
     const environment: NodeJS.ProcessEnv = {
       HOME: workspace,
@@ -293,11 +372,12 @@ export async function probeMacosSeatbelt(sandboxExec = DEFAULT_SANDBOX_EXEC): Pr
       DEVKIT_SEATBELT_CONTROL: control,
       DEVKIT_SEATBELT_SECRET: secret,
       DEVKIT_SEATBELT_PORT: String(port),
+      DEVKIT_SEATBELT_UNIX_SOCKET: unixSocket,
     };
     const result = await runProbe([sandboxExec, "-p", profile, "--", process.execPath, "--input-type=module", "-e", CHILD_PROBE], workspace, environment);
     const facts = result.exitCode === 0 && !result.timedOut && result.spawnError === undefined ? parseProbe(result.stdout) : undefined;
     const controlUnchanged = !existsSync(path.join(control, "forbidden.txt"));
-    if (facts && facts.workspaceWriteAllowed && facts.controlWriteDenied && facts.protectedReadDenied && facts.networkDenied && controlUnchanged && connections === 0) {
+    if (facts && facts.workspaceWriteAllowed && facts.controlWriteDenied && facts.protectedReadDenied && facts.networkDenied && facts.unixSocketDenied && controlUnchanged && connections === 0 && unixConnections === 0) {
       return {
         state: "supported", mechanism: "macos-seatbelt", platform: "darwin",
         enforcement: "full", filesystem: "full", network: "full", credentialReads: "configured-roots", probe: facts,
@@ -310,6 +390,7 @@ export async function probeMacosSeatbelt(sandboxExec = DEFAULT_SANDBOX_EXEC): Pr
       result.stdout,
       `exit=${String(result.exitCode)}`,
       `connections=${connections}`,
+      `unixConnections=${unixConnections}`,
     ].filter((value): value is string => Boolean(value)).join(" | "));
     return {
       state: "unsupported", mechanism: "macos-seatbelt", platform: "darwin",
@@ -324,7 +405,9 @@ export async function probeMacosSeatbelt(sandboxExec = DEFAULT_SANDBOX_EXEC): Pr
     };
   } finally {
     await closeServer(server).catch(() => {});
+    await closeServer(unixServer).catch(() => {});
     rmSync(root, { recursive: true, force: true, maxRetries: 1 });
+    rmSync(unixRoot, { recursive: true, force: true, maxRetries: 1 });
   }
 }
 

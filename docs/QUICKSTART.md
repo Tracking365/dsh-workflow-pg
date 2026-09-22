@@ -21,10 +21,13 @@ kept for inspection. No model credentials are required and none are probed autom
 
 `test:seatbelt-host` is a macOS host-capability gate, not a model test. It requires a usable
 `/usr/bin/sandbox-exec` and uses only disposable directories: candidate writes must work while
-control writes, reads from a synthetic protected directory, and loopback network access are
-denied. A constrained nested environment can legitimately fail this gate; DevKit treats that as
-unsupported rather than falling back to an unrestricted command. This boundary is not yet wired
-to a live Codex App Server and does not replace a credential broker.
+control writes, reads from a synthetic protected directory, host-home directory enumeration,
+loopback TCP, and a local Unix socket are denied. It also runs a fake package-shaped App Server wrapper through the exact managed
+launch boundary; it does not launch Codex or use account state. A constrained nested environment
+can legitimately fail this gate; DevKit treats that as unsupported rather than falling back to an
+unrestricted command. Its App Server boundary narrows major ambient host-data roots but is not a
+complete macOS read allowlist; the production credential broker and an actual-App-Server
+cancellation proof are still absent.
 
 ## Evaluate the DSH control plane (headless launcher gate verified)
 
@@ -50,9 +53,10 @@ The provider may then appear as `codexSubagent.state: "supported"`; this is regi
 evidence only. Its `writerSandbox` must be treated as `unverified` for `permissionMode: "never"`.
 The locked provider only emits an explicit App Server `workspace-write` sandbox request for
 `approve-for-me` with an empty explicit `env`; that is a necessary protocol prerequisite, not an
-OS-boundary result. Native DevKit remains `executionMode: "disabled"`, so `dev_task_run` still
-does not start Codex. Do not configure `dangerously-bypass-approvals-and-sandbox` or provide
-credentials for this check.
+OS-boundary result. The locked provider lacks an authenticated App Server approval bridge and
+DevKit lacks a credential broker, so `writerLaunchEligible` remains false. Native DevKit remains
+`executionMode: "disabled"`, so `dev_task_run` still does not start Codex. Do not configure
+`dangerously-bypass-approvals-and-sandbox` or provide credentials for this check.
 
 ## Test-only native deterministic lifecycle
 
@@ -124,6 +128,9 @@ installed provider has no public per-run cwd option, so a normal session rooted 
 repository cannot be treated as a substitute. The default disabled policy blocks before this
 composition can start a provider.
 
-No automatic resume currently exists. An interrupted task keeps its lease and artifacts;
-an operator must prove the old execution has stopped and reconcile its effects before
-future recovery support can safely retry. Never remove locks just to get a green run.
+On a restart, an unfinished task is marked `interrupted` and keeps its lease and artifacts.
+The packaged DSH tools do not have authority to release it: public `resume` remains blocked.
+A future authenticated host recovery control plane may use the internal recovery API only after
+it proves the old execution stopped, binds approval to the current recovery facts, preserves the
+old candidate, and queues a fresh clone from the frozen base. Never remove locks just to get a
+green run.

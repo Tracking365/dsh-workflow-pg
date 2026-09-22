@@ -21,6 +21,9 @@ const environment = {
   DSH_HOME: home,
   DSH_TELEMETRY_DISABLED: "1",
   DSH_DEVKIT_CONFIG: policyPath,
+  // Keep the profile gate self-contained when a user's shared npm cache has
+  // stale ownership or is intentionally unavailable to the test process.
+  NPM_CONFIG_CACHE: path.join(home, "npm-cache"),
 };
 
 function run(command, args, { timeout = 180_000 } = {}) {

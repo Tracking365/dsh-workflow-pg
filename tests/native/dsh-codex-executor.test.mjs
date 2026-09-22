@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -14,7 +14,7 @@ import { SubagentRuntime } from "@deepseek-ai/dsh-subagent";
 import * as codexProvider from "@deepseek-ai/dsh-subagent-codex";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import { ToolRuntime } from "@deepseek-ai/dsh-tools";
-import { DshCandidateWorkspaceCodexExecutor, DshCodexExecutor } from "../../dist/src/index.js";
+import { DshCandidateWorkspaceCodexExecutor, DshCodexExecutor, MacosSeatbeltAppServerConfinement } from "../../dist/src/index.js";
 
 const capabilities = {
   agentOptions: false,
@@ -134,6 +134,7 @@ function createBlockingCodexSubprocess() {
   const done = new Promise((resolve) => { resolveDone = resolve; });
   const state = {
     spawnCwds: [],
+    spawnSpecs: [],
     threadStart: undefined,
     interrupts: 0,
     terminateCalls: 0,
@@ -203,6 +204,7 @@ function createBlockingCodexSubprocess() {
     turnStarted: turnStarted.promise,
     spawn(spec) {
       state.spawnCwds.push(spec.cwd);
+      state.spawnSpecs.push(spec);
       return {
         stdin,
         stdout,
@@ -313,6 +315,69 @@ test("DshCodexExecutor rejects a parent session not bound to the candidate works
     });
   });
   assert.equal(starts, 0);
+});
+
+test("DshCandidateWorkspaceCodexExecutor preflights a host App Server boundary and retains failure when it cannot release", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-boundary-candidate-"));
+  const events = [];
+  const executor = new DshCandidateWorkspaceCodexExecutor({
+    agents: {
+      async create(options) {
+        events.push(`parent:${options.meta.cwd}`);
+        return { agent: parent(workspace), async dispose() { events.push("parent-dispose"); } };
+      },
+    },
+    subagents: {
+      getProvider() { return {}; },
+      async start() {
+        events.push("provider-start");
+        return {
+          id: "boundary-run",
+          result: Promise.resolve({ output: [], stopReason: "completed" }),
+          async dispose() { events.push("provider-dispose"); },
+        };
+      },
+    },
+    parent: parent(),
+    appServerBoundary: {
+      async prepare(preparedWorkspace) {
+        events.push(`prepare:${preparedWorkspace}`);
+        return {
+          async release(stopped) {
+            events.push(`release:${stopped}`);
+            return false;
+          },
+        };
+      },
+    },
+  });
+
+  const result = await executor.execute(request(new AbortController().signal, workspace));
+  assert.deepEqual(result, { stopped: false, runId: "boundary-run", failure: "CODEX_APP_SERVER_BOUNDARY_RELEASE_UNCONFIRMED" });
+  assert.deepEqual(events, [
+    `prepare:${workspace}`,
+    `parent:${realpathSync(workspace)}`,
+    "provider-start",
+    "provider-dispose",
+    "parent-dispose",
+    "release:true",
+  ]);
+});
+
+test("DshCandidateWorkspaceCodexExecutor does not create a parent when host App Server preflight fails", async () => {
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-boundary-unavailable-"));
+  let parentCreates = 0;
+  const executor = new DshCandidateWorkspaceCodexExecutor({
+    agents: { async create() { parentCreates += 1; throw new Error("must not run"); } },
+    subagents: { getProvider() { return {}; }, async start() { throw new Error("must not run"); } },
+    parent: parent(),
+    appServerBoundary: { async prepare() { throw new Error("host sandbox unavailable"); } },
+  });
+
+  assert.deepEqual(await executor.execute(request(new AbortController().signal, workspace)), {
+    stopped: true, failure: "CODEX_APP_SERVER_BOUNDARY_UNAVAILABLE",
+  });
+  assert.equal(parentCreates, 0);
 });
 
 test("DshCandidateWorkspaceCodexExecutor composes a real candidate-bound DSH parent session and releases it", { timeout: 10000 }, async () => {
@@ -550,6 +615,71 @@ test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the off
     await source?.dispose();
     await providerFiber?.dispose();
     await disposeSubprocess?.();
+    await harness.dispose();
+  }
+});
+
+test("candidate cancellation traverses the prepared Seatbelt App Server boundary before the official provider", { timeout: 10000 }, async () => {
+  const sourceWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-boundary-source-"));
+  const candidateWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-boundary-candidate-"));
+  const protectedRoot = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-boundary-protected-"));
+  const harness = await createAgentLoopHarness();
+  const controller = new AbortController();
+  const rawSubprocess = createBlockingCodexSubprocess();
+  const boundary = new MacosSeatbeltAppServerConfinement({
+    subprocess: { spawn(spec) { return rawSubprocess.spawn(spec); } },
+    deniedReadRoots: [protectedRoot],
+    sandboxExec: path.join(protectedRoot, "sandbox-exec"),
+    status: async () => ({
+      state: "supported", mechanism: "macos-seatbelt", platform: "darwin", enforcement: "full", filesystem: "full", network: "full", credentialReads: "configured-roots",
+      probe: { workspaceWriteAllowed: true, controlWriteDenied: true, protectedReadDenied: true, networkDenied: true, unixSocketDenied: true },
+    }),
+  });
+  let source;
+  let providerFiber;
+  let disposeScopedSubprocess;
+  let candidateSessionId;
+
+  try {
+    const scoped = harness.ctx.root.isolate("subprocess");
+    disposeScopedSubprocess = scoped.provide("subprocess", boundary);
+    providerFiber = scoped.plugin(codexProvider, {
+      providerName: "codex", env: {}, permissionMode: "approve-for-me", disposeGraceMs: 3000,
+    });
+    await providerFiber;
+    source = await harness.ctx.agents.create({
+      sessionId: "dsh-devkit-boundary-source-session",
+      meta: { cwd: sourceWorkspace },
+    });
+    const executor = new DshCandidateWorkspaceCodexExecutor({
+      agents: { create(options) { candidateSessionId = options.sessionId; return harness.ctx.agents.create(options); } },
+      subagents: harness.ctx.subagents,
+      parent: source.agent,
+      appServerBoundary: boundary,
+    });
+
+    const pending = executor.execute(request(controller.signal, candidateWorkspace));
+    await rawSubprocess.turnStarted;
+    controller.abort(new Error("fixture cancellation through prepared boundary"));
+    const result = await pending;
+
+    assert.equal(result.stopped, true);
+    assert.equal(result.failure, "CODEX_SUBAGENT_ABORTED");
+    assert.equal(rawSubprocess.state.spawnSpecs.length, 1);
+    const wrapped = rawSubprocess.state.spawnSpecs[0];
+    assert.equal(wrapped.argv[0], path.join(protectedRoot, "sandbox-exec"));
+    assert.match(wrapped.argv[2], /\(deny network\*\)/);
+    assert.equal(wrapped.env.CODEX_HOME, undefined);
+    assert.equal(typeof wrapped.env.TMPDIR, "string");
+    assert.equal(existsSync(wrapped.env.TMPDIR), false, "the boundary removes its private root only after provider range proof");
+    assert.equal(rawSubprocess.state.interrupts, 1);
+    assert.equal(rawSubprocess.state.terminateCalls, 1);
+    assert.ok(rawSubprocess.state.waitForExitCalls >= 1);
+    assert.equal(harness.ctx.agents.get(candidateSessionId), undefined);
+  } finally {
+    await source?.dispose();
+    await providerFiber?.dispose();
+    await disposeScopedSubprocess?.();
     await harness.dispose();
   }
 });
