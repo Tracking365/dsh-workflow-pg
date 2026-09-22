@@ -52,12 +52,15 @@ The dormant DSH Codex bridge delegates only through the official `subagents` reg
 does not invoke a Codex CLI or HTTP endpoint itself. Its candidate-session composition layer
 canonicalizes the already-created DevKit workspace, creates a short-lived DSH Agent at that
 cwd, and records the invoking Agent as its lifecycle/lineage parent. The bound bridge then
-requires the new parent session's canonical `cwd` to equal the candidate worktree, because the
+requires the new parent session’s canonical `cwd` to equal the candidate worktree, because the
 official provider owns its child cwd and has no public per-run cwd override. A mismatch returns
 `CODEX_WORKSPACE_BINDING_UNAVAILABLE` without starting a child. After a published child, the
 bridge waits for both the child run and candidate parent handle to dispose; an unproven teardown
-retains the writer lease. The default disabled policy rejects a task before this composition is
-invoked.
+retains the writer lease. Under the exact locked official provider, the native boundary also
+reads its declared `permissionMode` and refuses to construct an executor for
+`dangerously-bypass-approvals-and-sandbox` or an absent, unreadable, or unknown mode. This
+configuration guard does not make `never` or `approve-for-me` an OS sandbox. The default disabled policy rejects a
+task before this composition is invoked.
 
 `git()` disables hooks for generated fixture repositories; it is not a production Git
 adapter and does not implement organization signing/hooks policies. No host commit/push/
@@ -70,12 +73,13 @@ capabilities, binding to operator identity and expiration remain unimplemented.
 ## Explicit gaps / do not relax these to make tests pass
 
 * Native fixtures compose a real candidate-bound DSH parent and confirm that the official
-  provider’s deliberately rejecting subprocess seam receives that canonical cwd. One
-  separately authorized temporary run also started an App Server and observed that cwd and a
-  single exact scoped write. It does not prove filesystem containment, network-egress
-  enforcement, credential non-disclosure, approval behavior, or cancellation. There is no
-  verified OS sandbox, credential broker, or readonly tool-using reviewer; live runs remain
-  blocked.
+  provider’s deliberately rejecting subprocess seam receives that canonical cwd. An in-memory
+  JSON-RPC peer also proves the official provider sends an interrupt and waits for managed
+  teardown after a published-turn cancellation. One separately authorized temporary run started
+  an App Server and observed that cwd and a single exact scoped write. None of this proves
+  filesystem containment, network-egress enforcement, credential non-disclosure, approval
+  behavior, or cancellation of a real App Server process. There is no verified OS sandbox,
+  credential broker, or readonly tool-using reviewer; live runs remain blocked.
 * No automatic crash recovery or PID/lease reclamation. `resume` raises
   `RECOVERY_REQUIRES_OPERATOR`; do not delete a lease while an old writer may still exist.
 * No multi-user authorization boundary for shared DSH sessions. Use a private local profile.

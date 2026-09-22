@@ -92,14 +92,26 @@ That candidate-parent fixture also mounts the real published
 `@deepseek-ai/dsh-subagent-codex` provider with a subprocess seam that records `cwd` and throws
 before execution. The official provider reaches that seam exactly once with the canonical
 candidate workspace, then the bridge reports `CODEX_SUBAGENT_START_FAILED` and releases the
-candidate parent. This verifies the official provider's cwd handoff without launching an App
+candidate parent. This verifies the official provider’s cwd handoff without launching an App
 Server, using credentials, or making a network request.
+
+A second official-provider fixture implements only the local newline-delimited JSON-RPC peer:
+it accepts initialization and an ephemeral thread, acknowledges `turn/start`, then holds the
+published turn open. Cancelling after the turn ID commits makes the real provider send one
+`turn/interrupt`, terminate its managed child range, await `waitForExit()`, surface
+`CODEX_SUBAGENT_ABORTED`, and release the candidate parent/session. The peer is in-memory; it
+does not start an executable, App Server, model session, or network connection. This covers
+the provider wire/lifecycle path, not cancellation of a real App Server process.
 
 The second native ToolRuntime fixture mounts the actual published
 `@deepseek-ai/dsh-subagent-codex` plugin with the real `SubagentRuntime` and a deliberately
 throwing subprocess seam. It proves that the official provider registers as `codex` and that
 `devkit_doctor` observes its published capability shape, while asserting zero subprocess
-starts. This is host-plane registration evidence, not an App Server or model-session test.
+starts. Under the locked provider version, doctor also reads its declared `permissionMode`:
+only `never` and `approve-for-me` can construct the candidate executor;
+`dangerously-bypass-approvals-and-sandbox` and an unrecognized, missing, or unreadable mode are
+reported as blocked and cannot construct one. This is host-plane configuration enforcement, not an App
+Server or model-session test and not an OS sandbox.
 
 `npm run test:codex-provider-profile` adds a profile-level counterpart. It packages the
 already-installed exact provider, adds the tarball to a new headless `DSH_HOME`, confirms the
@@ -143,9 +155,10 @@ that package-manager-only warning.
 ## Remaining compatibility gates
 
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
-registration, launcher lifecycle, and one real official-provider cwd/write behavior are now
-covered. The candidate-parent path has not run inside a deployed live task. Cancellation
-through an actual provider process, provider-specific wire edge cases, and an enforceable
+registration, launcher lifecycle, declared permission-mode guard, official provider wire
+cancellation, and one real official-provider cwd/write behavior are now covered. The
+candidate-parent path has not run inside a deployed live task. Cancellation through an actual
+App Server process, provider-specific wire edge cases, and an enforceable
 filesystem/network/credential sandbox remain unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter

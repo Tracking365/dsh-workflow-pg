@@ -7,6 +7,8 @@ import { Devkit, DevkitError, assertPaginationFixturePolicy, createDshCandidateW
 
 export const name = "devkit";
 export const inject = ["tools"];
+const SAFE_CODEX_PERMISSION_MODES = new Set(["never", "approve-for-me"]);
+const DANGEROUS_CODEX_PERMISSION_MODE = "dangerously-bypass-approvals-and-sandbox";
 const string = { type: "string", minLength: 1 };
 const list = { type: "array", items: string };
 const record = (properties, required = Object.keys(properties)) => ({ type: "object", properties, required, additionalProperties: false });
@@ -19,19 +21,54 @@ const taskSchema = record({
 const idSchema = record({ taskId: string });
 const parseId = args => text(object(args, ["taskId"]).taskId, "taskId", 100);
 
-function codexProviderStatus(ctx) {
+function codexProvider(ctx) {
   // `subagents` is optional: a normal property read requires the plugin to
   // declare it in `inject`, whereas `get()` safely probes an optional service.
+  const subagents = ctx.get("subagents");
+  if (!subagents || typeof subagents.getProvider !== "function") return undefined;
+  const provider = subagents.getProvider("codex");
+  return provider;
+}
+
+function codexPermissionMode(provider) {
+  // Treat an unreadable provider configuration as unverified instead of
+  // allowing a plugin implementation detail to bypass this fail-closed gate.
+  try {
+    const mode = provider?.config?.permissionMode;
+    return typeof mode === "string" ? mode : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSafeCodexProvider(provider) {
+  return SAFE_CODEX_PERMISSION_MODES.has(codexPermissionMode(provider));
+}
+
+export function codexProviderStatus(ctx) {
   const subagents = ctx.get("subagents");
   if (!subagents || typeof subagents.getProvider !== "function") {
     return { state: "unconfigured", reason: "DSH_SUBAGENT_SERVICE_MISSING" };
   }
-  const provider = subagents.getProvider("codex");
+  const provider = codexProvider(ctx);
   if (!provider) return { state: "unconfigured", reason: "CODEX_PROVIDER_MISSING" };
+  const permissionMode = codexPermissionMode(provider);
+  if (!isSafeCodexProvider(provider)) {
+    return {
+      state: "blocked",
+      provider: "codex",
+      reason: permissionMode === DANGEROUS_CODEX_PERMISSION_MODE
+        ? "CODEX_FULL_ACCESS_MODE_FORBIDDEN"
+        : "CODEX_PERMISSION_MODE_UNVERIFIED",
+      ...(permissionMode === undefined ? {} : { permissionMode }),
+    };
+  }
   const capabilities = provider.capabilities ?? {};
   return {
     state: "supported",
     provider: "codex",
+    permissionMode,
+    permissionEnforcement: "provider-declared",
     liveValidated: false,
     inheritsParentContext: provider.inheritsParentContext === true,
     capabilities: {
@@ -44,10 +81,11 @@ function codexProviderStatus(ctx) {
   };
 }
 
-function codexExecutor(ctx, exec) {
+export function codexExecutor(ctx, exec) {
   const subagents = ctx.get("subagents");
   const agents = ctx.get("agents");
-  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || subagents.getProvider("codex") === undefined) return undefined;
+  const provider = codexProvider(ctx);
+  if (!exec.agent || !agents || typeof agents.create !== "function" || !subagents || typeof subagents.getProvider !== "function" || !isSafeCodexProvider(provider)) return undefined;
   return createDshCandidateWorkspaceCodexExecutor({ agents, subagents, parent: exec.agent });
 }
 

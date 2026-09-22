@@ -3,7 +3,7 @@
 基于 DeepSeek Harness 的研发辅助插件，按既有 `dsh-devkit-handoff/` 计划迭代。
 
 **当前是首个可运行的控制面与 Bug 修复 fixture 增量，不是 M0–M3 全部完成，更不是生产自动修复系统。**
-真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。另有测试专用离线 `LlmAdapter` 驱动真实 DSH AgentLoop，已验证会话内的工具选择、渲染结果回传和取消后的文本保留；它不含端点、凭据或网络代码。候选工作副本专用的短生命周期 DSH 父会话也已在真实 AgentLoop/Session 夹具中组成，并证明官方 provider 的拒绝式 subprocess seam 收到该候选目录。2026-09-22 在一次明确授权、非 CI 的临时 Git fixture 中，官方 App Server 以当前登录态实际运行 1 次：`permissionMode: "never"`、显式 `env: {}`、无 full-access；观察到其 cwd 与候选目录一致并生成精确 proof。它不证明 OS 级文件/网络/凭据隔离或取消边界，原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
+真实 DSH 的 bundle/profile 装载已联调；官方 Codex 子代理桥接已在真实 DSH 注册表和 provider 注册夹具中验证。新增的原生无模型闭环只支持一个内容锁定的分页 fixture，策略和插件配置均须显式授权。另有测试专用离线 `LlmAdapter` 驱动真实 DSH AgentLoop，已验证会话内的工具选择、渲染结果回传和取消后的文本保留；它不含端点、凭据或网络代码。候选工作副本专用的短生命周期 DSH 父会话也已在真实 AgentLoop/Session 夹具中组成，并证明官方 provider 的拒绝式 subprocess seam 收到该候选目录。官方 provider 的本地 JSON-RPC 取消夹具还验证了已发布 turn 的 interrupt、受管进程终止确认和候选父会话释放。2026-09-22 在一次明确授权、非 CI 的临时 Git fixture 中，官方 App Server 以当前登录态实际运行 1 次：`permissionMode: "never"`、显式 `env: {}`、无 full-access；观察到其 cwd 与候选目录一致并生成精确 proof。它不证明 OS 级文件/网络/凭据隔离或真实 App Server 的取消边界，原生入口默认仍阻塞代码执行，不会偷偷使用测试替身或 full-access。
 
 ## 已实现
 
@@ -51,10 +51,10 @@ dsh --profile devkit-eval --help
 dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha.2
 ```
 
-这只增加 host-plane provider，不会开启 DevKit 的 `run`，也不是已验证的沙箱。不要把 provider 改成 `dangerously-bypass-approvals-and-sandbox`，更不要因为 `doctor` 显示 provider 已注册就输入真实任务或凭据。
+这只增加 host-plane provider，不会开启 DevKit 的 `run`，也不是已验证的沙箱。native `doctor` 会把 `dangerously-bypass-approvals-and-sandbox` 或无法核验的 provider 权限模式标记为 blocked，且不会为其构造执行器；这不是 OS 沙箱的替代品。更不要因为 provider 已注册就输入真实任务或凭据。
 
 `skills/bugfix/SKILL.md` 是随包分发的规则；不会因为进入 npm 包就自动被 DSH 发现，应按项目 Skills 规则显式安装到测试项目，不覆盖既有文件。
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam 与一次真实 App Server fixture 已有证据；下一步是先实现并验证 OS 级文件/网络/凭据能力强制，再覆盖真实 provider 的取消边界。随后接入独立真实审核、完成安全恢复与审批凭据。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消与一次真实 App Server fixture 已有证据；下一步是先实现并验证 OS 级文件/网络/凭据能力强制，再覆盖真实 App Server 的取消边界。随后接入独立真实审核、完成安全恢复与审批凭据。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。

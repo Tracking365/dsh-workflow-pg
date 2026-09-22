@@ -260,6 +260,8 @@ test("real official Codex provider is visible to the native doctor without start
     assert.deepEqual(doctor.value.codexSubagent, {
       state: "supported",
       provider: "codex",
+      permissionMode: "never",
+      permissionEnforcement: "provider-declared",
       liveValidated: false,
       inheritsParentContext: false,
       capabilities: {
@@ -279,4 +281,84 @@ test("real official Codex provider is visible to the native doctor without start
     await subagentsFiber.dispose();
     await disposePrompt();
   }
+});
+
+test("native doctor blocks a full-access Codex provider before it can become an executor", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-full-access-"));
+  const configPath = path.join(root, "policy.json");
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    repositories: {},
+    verificationProfiles: {},
+    maxRetries: 2,
+    maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const subagentsFiber = ctx.plugin(SubagentRuntime, { maxDepth: 1, maxActiveSubagents: 1 });
+  await subagentsFiber;
+  const disposeAgents = ctx.provide("agents", { create() { throw new Error("must not create a parent for a blocked provider"); } });
+  let spawnCalls = 0;
+  const disposeSubprocess = ctx.provide("subprocess", {
+    spawn() {
+      spawnCalls += 1;
+      throw new Error("the full-access provider must never start");
+    },
+  });
+  const providerFiber = ctx.plugin(codexProvider, {
+    providerName: "codex",
+    env: {},
+    permissionMode: "dangerously-bypass-approvals-and-sandbox",
+    disposeGraceMs: 3000,
+  });
+  await providerFiber;
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.deepEqual(doctor.value.codexSubagent, {
+      state: "blocked",
+      provider: "codex",
+      reason: "CODEX_FULL_ACCESS_MODE_FORBIDDEN",
+      permissionMode: "dangerously-bypass-approvals-and-sandbox",
+    });
+    assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: root } } } }), undefined);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await providerFiber.dispose();
+    await disposeSubprocess();
+    await disposeAgents();
+    await subagentsFiber.dispose();
+    await disposePrompt();
+  }
+});
+
+test("native doctor fails closed when a Codex provider's permission mode cannot be read", () => {
+  const provider = {};
+  Object.defineProperty(provider, "config", {
+    get() { throw new Error("unreadable provider configuration"); },
+  });
+  const ctx = {
+    get(name) {
+      if (name === "subagents") return { getProvider() { return provider; } };
+      if (name === "agents") return { create() { throw new Error("must not create a parent for an unverified provider"); } };
+      return undefined;
+    },
+  };
+
+  assert.deepEqual(native.codexProviderStatus(ctx), {
+    state: "blocked",
+    provider: "codex",
+    reason: "CODEX_PERMISSION_MODE_UNVERIFIED",
+  });
+  assert.equal(native.codexExecutor(ctx, { agent: { session: { id: "parent", header: { cwd: "/fixture" } } } }), undefined);
 });

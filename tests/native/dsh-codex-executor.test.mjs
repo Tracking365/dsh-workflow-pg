@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough, Writable } from "node:stream";
 import test from "node:test";
 import { Context } from "@deepseek-ai/cordis";
 import AgentRegistry from "@deepseek-ai/dsh-agent";
@@ -113,6 +114,108 @@ async function createAgentLoopHarness() {
       await projectionsFiber.dispose();
       await sessionsFiber.dispose();
       await llmFiber.dispose();
+    },
+  };
+}
+
+/**
+ * A local protocol peer for the official provider. It accepts the minimum
+ * startup sequence, keeps the turn open, and only resolves its managed-range
+ * outcome after the provider has asked it to terminate. No executable, model,
+ * credential, or network transport is involved.
+ */
+function createBlockingCodexSubprocess() {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const turnStarted = Promise.withResolvers();
+  let buffer = "";
+  let exited = false;
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
+  const state = {
+    spawnCwds: [],
+    threadStart: undefined,
+    interrupts: 0,
+    terminateCalls: 0,
+    waitForExitCalls: 0,
+  };
+  const send = (message) => { stdout.write(`${JSON.stringify(message)}\n`); };
+  const respond = (id, result) => { if (id !== undefined) send({ jsonrpc: "2.0", id, result }); };
+  const receive = (frame) => {
+    if (typeof frame?.method !== "string") return;
+    switch (frame.method) {
+      case "initialize":
+        respond(frame.id, {});
+        return;
+      case "thread/start":
+        state.threadStart = frame.params;
+        respond(frame.id, { thread: { id: "fixture-thread", ephemeral: true } });
+        return;
+      case "turn/start":
+        respond(frame.id, { turn: { id: "fixture-turn" } });
+        queueMicrotask(() => {
+          send({
+            jsonrpc: "2.0",
+            method: "turn/started",
+            params: { threadId: "fixture-thread", turn: { id: "fixture-turn" } },
+          });
+          // The response above schedules the provider continuation that commits
+          // the turn ID. Resolve on the next turn so cancellation exercises the
+          // published-turn path instead of the legitimate startup race.
+          setImmediate(() => turnStarted.resolve());
+        });
+        return;
+      case "turn/interrupt":
+        state.interrupts += 1;
+        respond(frame.id, {});
+        return;
+      default:
+        respond(frame.id, {});
+    }
+  };
+  const stdin = new Writable({
+    write(chunk, _encoding, callback) {
+      try {
+        buffer += chunk.toString("utf8");
+        for (;;) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) break;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) receive(JSON.parse(line));
+        }
+        callback();
+      } catch (error) {
+        callback(error);
+      }
+    },
+  });
+  const terminate = () => {
+    if (exited) return;
+    exited = true;
+    state.terminateCalls += 1;
+    stdout.end();
+    stderr.end();
+    resolveDone({ exitCode: null, signal: "SIGTERM" });
+  };
+  return {
+    state,
+    turnStarted: turnStarted.promise,
+    spawn(spec) {
+      state.spawnCwds.push(spec.cwd);
+      return {
+        stdin,
+        stdout,
+        stderr,
+        control: undefined,
+        collected: {},
+        done,
+        terminate,
+        async waitForExit() {
+          state.waitForExitCalls += 1;
+          return exited;
+        },
+      };
     },
   };
 }
@@ -383,4 +486,68 @@ test("DshCandidateWorkspaceCodexExecutor fails closed when its candidate parent 
   });
   assert.equal(starts, 1);
   assert.equal(childDisposals, 1, "the published Codex child still receives its own disposal attempt");
+});
+
+test("DshCandidateWorkspaceCodexExecutor propagates cancellation through the official provider and proves child teardown", { timeout: 10000 }, async () => {
+  const sourceWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-cancel-source-"));
+  const candidateWorkspace = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-cancel-candidate-"));
+  const harness = await createAgentLoopHarness();
+  const controller = new AbortController();
+  const subprocess = createBlockingCodexSubprocess();
+  let source;
+  let providerFiber;
+  let disposeSubprocess;
+  let candidateSessionId;
+
+  try {
+    disposeSubprocess = harness.ctx.provide("subprocess", {
+      spawn(spec) { return subprocess.spawn(spec); },
+    });
+    providerFiber = harness.ctx.plugin(codexProvider, {
+      providerName: "codex",
+      env: {},
+      permissionMode: "never",
+      disposeGraceMs: 3000,
+    });
+    await providerFiber;
+    source = await harness.ctx.agents.create({
+      sessionId: "dsh-devkit-cancel-source-session",
+      meta: { cwd: sourceWorkspace },
+    });
+    const executor = new DshCandidateWorkspaceCodexExecutor({
+      agents: {
+        create(options) {
+          candidateSessionId = options.sessionId;
+          return harness.ctx.agents.create(options);
+        },
+      },
+      subagents: harness.ctx.subagents,
+      parent: source.agent,
+    });
+
+    const pending = executor.execute(request(controller.signal, candidateWorkspace));
+    await subprocess.turnStarted;
+    controller.abort(new Error("fixture cancellation"));
+    const result = await pending;
+
+    assert.equal(result.stopped, true);
+    assert.equal(typeof result.runId, "string");
+    assert.equal(result.failure, "CODEX_SUBAGENT_ABORTED");
+    assert.deepEqual(subprocess.state.spawnCwds, [realpathSync(candidateWorkspace)]);
+    assert.deepEqual(subprocess.state.threadStart, {
+      cwd: realpathSync(candidateWorkspace),
+      ephemeral: true,
+      approvalPolicy: "never",
+    });
+    assert.equal(subprocess.state.interrupts, 1, "the provider sends one best-effort turn interruption");
+    assert.equal(subprocess.state.terminateCalls, 1, "the provider owns the managed child termination");
+    assert.ok(subprocess.state.waitForExitCalls >= 1, "the provider awaits managed-range quiescence");
+    assert.equal(harness.ctx.agents.get(candidateSessionId), undefined, "the candidate parent is released only after the child settles");
+    assert.equal(harness.ctx.sessions.get(candidateSessionId), undefined, "the candidate session is removed after confirmed teardown");
+  } finally {
+    await source?.dispose();
+    await providerFiber?.dispose();
+    await disposeSubprocess?.();
+    await harness.dispose();
+  }
 });
