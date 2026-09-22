@@ -5,9 +5,12 @@ import type { CommandSpec } from "../adapters/process.js";
 
 /** This schema belongs to the trusted host, never to a model-facing tool. */
 export function validateHostPolicy(value: unknown): HostPolicy {
-  const p = object(value, ["dataRoot", "executionMode", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
+  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
   const dataRoot = text(p.dataRoot, "dataRoot");
-  if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(String(p.executionMode))) throw new DevkitError("INVALID_HOST_POLICY");
+  const executionMode = String(p.executionMode);
+  if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(executionMode)) throw new DevkitError("INVALID_HOST_POLICY");
+  const fixtureDriver = p.fixtureDriver === undefined ? undefined : text(p.fixtureDriver, "fixtureDriver", 100);
+  if ((executionMode === "fixture" && fixtureDriver !== "pagination-v1") || (executionMode !== "fixture" && fixtureDriver !== undefined)) throw new DevkitError("INVALID_FIXTURE_DRIVER");
   const map = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("INVALID_HOST_POLICY");
     return object(value, Object.keys(value));
@@ -29,5 +32,13 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     });
   }
   if (!Number.isInteger(p.maxRetries) || Number(p.maxRetries) < 0 || Number(p.maxRetries) > 2 || !Number.isSafeInteger(p.maxDurationMs) || Number(p.maxDurationMs) <= 0 || Number(p.maxDurationMs) > 3600000) throw new DevkitError("INVALID_BUDGET");
-  return { dataRoot, executionMode: p.executionMode as HostPolicy["executionMode"], repositories, verificationProfiles, maxRetries: Number(p.maxRetries), maxDurationMs: Number(p.maxDurationMs) };
+  return {
+    dataRoot,
+    executionMode: executionMode as HostPolicy["executionMode"],
+    ...(fixtureDriver === undefined ? {} : { fixtureDriver: fixtureDriver as "pagination-v1" }),
+    repositories,
+    verificationProfiles,
+    maxRetries: Number(p.maxRetries),
+    maxDurationMs: Number(p.maxDurationMs),
+  };
 }

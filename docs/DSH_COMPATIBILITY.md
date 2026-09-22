@@ -40,6 +40,13 @@ pipeline. The fixture loads `native/index.mjs` through `Context.plugin()`, dispa
 `doctor`, `create`, `status`, invalid-input rejection, and the disabled `run` path through
 `ToolRuntime.execute()`, then proves unload and reload do not retain duplicate tools.
 
+The same test file also exercises the only explicit native no-model execution mode. Both the
+trusted policy and native plugin config select `pagination-v1`; the adapter rejects anything
+except the marked, content-locked pagination repository and its fixed TAP command. Through
+the real `ToolRuntime` it completes `create → run → status → report`, records the workspace
+guard and deterministic executor run ID, rejects automatic resume, and accepts a terminal
+cancel request. It starts no model, Codex process, or arbitrary child command.
+
 `tests/native/dsh-codex-executor.test.mjs` mounts the actual `SubagentRuntime`, registers a
 fixture provider through its real registry, and verifies that `DshCodexExecutor` sends one
 bounded/redacted text task, forwards the exact caller signal and parent Agent, requests none
@@ -90,7 +97,8 @@ composed at the isolated candidate cwd, and no official Codex App Server process
 or credential has been started. Caller cancellation through an actual provider process, tool
 presentation/output formatting in the actual model loop, model-provider interaction, and an
 enforceable filesystem/network/credential sandbox remain unverified. A01–A05 therefore remain
-partial. Native DevKit keeps `executionMode: "disabled"` until those gates are demonstrated.
+partial. The default native policy keeps `executionMode: "disabled"`; `pagination-v1` is only a
+double-opt-in, content-locked regression fixture and does not alter the live gate.
 
 ## Toolchain decision
 

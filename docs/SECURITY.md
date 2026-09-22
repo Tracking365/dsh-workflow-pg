@@ -11,6 +11,13 @@ best-effort cancellation, NOT a sandbox: a hostile process can escape its group,
 host files, use the network, or forge TAP output. Path/snapshot checks are post-hoc guards
 and have filesystem race limits. Therefore real code execution deliberately fails closed.
 
+The sole native exception is the `pagination-v1` non-production fixture. It requires two
+separate trusted-host declarations, a marker file, exact known source/test contents, exactly
+one repository alias and a fixed Node TAP command before its candidate clone can reach a
+verification command. Its writer and reviewer are deterministic host code and start neither
+a shell nor a model. This is a regression fixture, not a configurable local sandbox or an
+authorization to point DevKit at another repository.
+
 ## Implemented controls
 
 Task inputs cannot set host policy, arbitrary commands, output paths, approval or readiness.

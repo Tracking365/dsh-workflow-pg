@@ -11,7 +11,7 @@ import { resolveBase, prepareWorkspace, snapshot, assertScope, frozenHash, expor
 import { validateReview, type Reviewer, type Finding } from "../adapters/review.js";
 export interface RepositoryPolicy { path: string; allowedPaths: string[]; protectedPaths: string[] }
 export interface HostPolicy {
-  dataRoot: string; executionMode: "disabled" | "fixture";
+  dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }
@@ -22,7 +22,11 @@ export interface ExecutionRequest {
 /** An executor always reports whether its owned writer has reached quiescence. */
 export interface ExecutionResult { readonly stopped: boolean; readonly runId?: string; readonly failure?: string }
 export interface CodeExecutor { readonly family: string; readonly kind: "fixture" | "live"; execute(request: ExecutionRequest): Promise<ExecutionResult> }
-export interface RuntimeAdapters { executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean> }
+export interface RuntimeAdapters {
+  executor?: CodeExecutor; reviewer?: Reviewer; confirmFinding?: (finding: Finding, request: ExecutionRequest) => Promise<boolean>;
+  /** Trusted host-only guard run before any fixture verification command. */
+  workspaceGuard?: { readonly id: string; assertWorkspace(workspace: string): void };
+}
 interface ActiveRun { controller: AbortController; done: Promise<TaskRecord> }
 
 /** Host-owned application service. The model-facing tool surface deliberately excludes accept and policy mutation. */
@@ -59,6 +63,9 @@ export class Devkit {
       isolation: { filesystem: "unsupported", network: "unsupported", enforcement: "none" },
       cancellation: { state: process.platform === "linux" ? "supported" : "unverified", enforcement: "partial", note: "Process groups only; escaped descendants require an OS sandbox." },
       nativeRuntime: { state: "unverified" }, live: { state: "unsupported", reason: "LIVE_SANDBOX_NOT_IMPLEMENTED" },
+      fixture: this.policy.executionMode === "fixture"
+        ? { state: "enabled", driver: this.policy.fixtureDriver, deterministic: true, nonProduction: true }
+        : { state: "disabled" },
       executor: this.adapters.executor ? { family: this.adapters.executor.family, kind: this.adapters.executor.kind } : { state: "unconfigured" },
       reviewer: this.adapters.reviewer ? { family: this.adapters.reviewer.family, kind: this.adapters.reviewer.kind } : { state: "unconfigured" } };
   }
@@ -95,6 +102,10 @@ export class Devkit {
       const base = task.baseCommit ?? resolveBase(repo.path, task.input.baseRef), planHash = hash(checks);
       const work = prepareWorkspace(repo.path, path.join(this.policy.dataRoot, "workspaces"), id, base);
       set({ workspace: work, baseCommit: base }, "workspace_created", { base });
+      if (this.adapters.workspaceGuard) {
+        this.adapters.workspaceGuard.assertWorkspace(work);
+        set({}, "workspace_guarded", { guard: this.adapters.workspaceGuard.id });
+      }
       const capture = () => snapshot(work, base, this.policyHash, planHash);
       stage("context");
       const baseline = capture(), protectedHash = frozenHash(baseline, repo.protectedPaths);

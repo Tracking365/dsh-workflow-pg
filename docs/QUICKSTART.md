@@ -43,6 +43,20 @@ evidence only. Native DevKit remains `executionMode: "disabled"`, so `dev_task_r
 does not start Codex. Do not configure `dangerously-bypass-approvals-and-sandbox` or provide
 credentials for this check.
 
+## Test-only native deterministic lifecycle
+
+The only native execution path that currently exists is the non-production
+`pagination-v1` fixture exercised by `npm test`. It needs two separate host-owned opt-ins:
+the policy must set both `executionMode: "fixture"` and `fixtureDriver: "pagination-v1"`,
+and the DevKit plugin configuration must separately set `fixtureDriver: "pagination-v1"`.
+The plugin then accepts exactly one repository alias (`fixture`), fixed `src/` and `test/`
+scopes, a fixed Node TAP regression command, and a marker plus known fixture file contents.
+
+This path uses deterministic host code for both writing and review. It does not start a model,
+does not provide a general local shell runner, and must not be pointed at a business repository.
+Any missing opt-in, changed fixture content, extra repository/profile, or different command is
+rejected before a verification command can run.
+
 Default data location is `~/.dsh-devkit`. To configure repository aliases, set the absolute
 path `DSH_DEVKIT_CONFIG` in the host environment before starting DSH. The JSON file is a
 host-owned file, not a task payload, and must not be writable by a code execution sandbox.
@@ -77,7 +91,8 @@ handoff example config has been completely implemented; unknown keys are rejecte
 Ask DSH to run doctor, create a bugfix task with alias demo/profile node-tap and acceptance
 ID A1, then inspect status/report. `dev_task_run` returns a blocked task with
 `LIVE_SANDBOX_NOT_IMPLEMENTED`. That is intentional. Do not use another shell tool to
-bypass it, or set fixture mode in native DSH: native fixture mode is rejected.
+bypass it. The test-only `pagination-v1` exception above is content-locked and cannot turn
+this general disabled policy into a local execution facility.
 
 The future Codex bridge will also fail closed with `CODEX_WORKSPACE_BINDING_UNAVAILABLE`
 unless the parent DSH session's canonical working directory is exactly the isolated DevKit

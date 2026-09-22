@@ -3,13 +3,44 @@ import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Devkit, TaskStore, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git } from "../src/index.js";
+import { assertPaginationFixturePolicy, createPaginationFixtureAdapters, Devkit, TaskStore, validateHostPolicy, validateTaskInput, resolveWithin, resolveRealWithin, hash, snapshot, runCommand, minimalEnvironment, redact, evidenceGate, DeepSeekReviewer, git } from "../src/index.js";
 import { input, fixture, fixed, broken, adapters, finding, runCase } from "./helpers.js";
 
 test("strict contracts reject nested unknowns, duplicate ids and model permissions", () => {
   for (const patch of [{ approved: true }, { executionMode: "fixture" }, { title: " " }, { reproduction: { ...input.reproduction, approved: true } }, { reproduction: { ...input.reproduction, steps: [1] } }, { acceptanceCriteria: [input.acceptanceCriteria[0], input.acceptanceCriteria[0]] }]) assert.throws(() => validateTaskInput({ ...input, ...patch }));
   assert.throws(() => validateTaskInput({ ...input, kind: "ui-fix" }), /UNSUPPORTED/);
   assert.equal(hash({ a: 1, b: 2 }), hash({ b: 2, a: 1 }));
+});
+test("the native deterministic fixture rejects a loose repository or command policy", () => {
+  const f = fixture();
+  assert.doesNotThrow(() => assertPaginationFixturePolicy(f.policy));
+  const { fixtureDriver: _fixtureDriver, ...missingFixtureDriver } = f.policy;
+  assert.throws(() => validateHostPolicy(missingFixtureDriver), /INVALID_FIXTURE_DRIVER/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, executionMode: "disabled", fixtureDriver: "pagination-v1" }), /INVALID_FIXTURE_DRIVER/);
+  const arbitraryCommand = {
+    ...f.policy,
+    verificationProfiles: {
+      ...f.policy.verificationProfiles,
+      regression: [{ ...f.policy.verificationProfiles.regression![0]!, args: ["-e", "process.exit(0)"] }],
+    },
+  };
+  assert.throws(() => assertPaginationFixturePolicy(arbitraryCommand), /FIXTURE_VERIFICATION_POLICY_INVALID/);
+  writeFileSync(path.join(f.repo, "src/page.mjs"), "export const arbitrary = true;\n");
+  assert.throws(() => assertPaginationFixturePolicy(f.policy), /FIXTURE_SOURCE_UNEXPECTED/);
+});
+test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
+  const f = fixture();
+  const runtime = new Devkit(f.policy, createPaginationFixtureAdapters());
+  try {
+    writeFileSync(path.join(f.repo, "src/page.mjs"), "export const arbitrary = true;\n");
+    git(f.repo, ["add", "src/page.mjs"]);
+    git(f.repo, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "unsafe fixture base"]);
+    const task = runtime.create({ ...input, baseRef: "HEAD" });
+    const result = await runtime.run(task.taskId);
+    assert.equal(result.reason, "FIXTURE_SOURCE_UNEXPECTED");
+    assert.ok(runtime.store.history(task.taskId).some((event) => event.type === "workspace_created"));
+    assert.equal(runtime.store.history(task.taskId).some((event) => event.type === "reproduction"), false);
+  } finally { await runtime.close(); }
 });
 test("idempotency, policy conflicts and compare-and-swap are durable", () => {
   const f = fixture(), store = new TaskStore(path.join(f.data, "tasks.sqlite"));
@@ -74,7 +105,9 @@ test("no reproduction does not dispatch the writer", async () => {
   try { const r = await runtime.run(runtime.create(input).taskId); assert.equal(r.reason, "NOT_REPRODUCED"); assert.equal(calls, 0); } finally { await runtime.close(); }
 });
 test("default policy blocks live before any model execution", async () => {
-  const f = fixture({ executionMode: "disabled" }), runtime = new Devkit(f.policy, adapters());
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const runtime = new Devkit({ ...disabledPolicy, executionMode: "disabled" }, adapters());
   try { const r = await runtime.run(runtime.create(input).taskId); assert.equal(r.reason, "LIVE_SANDBOX_NOT_IMPLEMENTED"); assert.equal(r.workspace, undefined); } finally { await runtime.close(); }
 });
 test("missing reviewer and same-family reviewer fail closed", async () => {
