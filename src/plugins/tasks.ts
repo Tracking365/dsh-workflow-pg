@@ -18,10 +18,22 @@ export interface ReviewerPolicy { endpoint: string; model: string; credentialEnv
  * separately implemented credential broker is available.
  */
 export interface CodexAppServerPolicy { mode: "macos-seatbelt-v1"; deniedReadRoots: string[] }
+/**
+ * Host-only metadata for the local, human approval presentation. The secret
+ * value itself is deliberately outside JSON policy and is read only when the
+ * native host explicitly starts this listener.
+ */
+export interface CodexApprovalControlPlanePolicy {
+  mode: "loopback-v1";
+  credentialEnv: string;
+  operatorId: string;
+  port?: number;
+}
 export interface HostPolicy {
   dataRoot: string; executionMode: "disabled" | "fixture"; fixtureDriver?: "pagination-v1";
   reviewer?: ReviewerPolicy;
   codexAppServer?: CodexAppServerPolicy;
+  codexApprovalControlPlane?: CodexApprovalControlPlanePolicy;
   repositories: Record<string, RepositoryPolicy>; verificationProfiles: Record<string, CommandSpec[]>;
   maxRetries: number; maxDurationMs: number;
 }

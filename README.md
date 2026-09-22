@@ -11,9 +11,10 @@
 provider 的自动拒绝流。它强制 ephemeral 候选线程、受限读写、命令网络关闭，并对审批
 条目和终态通知都校验 task/thread/turn/item 绑定；伪造服务端已覆盖逐请求人工审批、取消和
 退出证明，并可复用既有 Seatbelt 启动封装。配套的本地审批队列与 loopback HTML 页面使用
-一次性 ID、过期/取消/容量拒绝、宿主密钥登录、`HttpOnly` 会话和 CSRF 校验；页面仍未接入
-DSH 原生策略。它们没有读取当前登录、没有模型网络或凭据 broker，也尚未接入 native live
-路径；因此不能把它们当作生产可用开关。
+一次性 ID、过期/取消/容量拒绝、宿主密钥登录、`HttpOnly` 会话和 CSRF 校验。现在只有在
+宿主策略显式声明 `codexApprovalControlPlane` 且提供专用 `DSH_DEVKIT_*` 密钥时，native 才会
+启动该页面并在卸载时关闭它；它仍未接入 direct client 的执行路径。它们没有读取当前登录、
+没有模型网络或凭据 broker，因此不能把它们当作生产可用开关。
 
 ## 已实现
 
@@ -70,4 +71,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是把现有审批页面接入 native 策略，并在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），再设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，最后覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批页面、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。

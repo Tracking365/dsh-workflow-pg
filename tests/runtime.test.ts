@@ -48,6 +48,24 @@ test("trusted App Server policy can only request the managed Seatbelt boundary o
   assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexAppServer: { ...codexAppServer, deniedReadRoots: ["relative"] } }), /INVALID_APP_SERVER_BOUNDARY/);
   assert.throws(() => validateHostPolicy({ ...f.policy, codexAppServer }), /LIVE_APP_SERVER_BOUNDARY_NOT_ALLOWED_IN_FIXTURE/);
 });
+test("trusted local approval control-plane policy holds only an environment reference outside fixtures", () => {
+  const f = fixture();
+  const { fixtureDriver: _fixtureDriver, ...disabledPolicy } = f.policy;
+  const codexApprovalControlPlane = {
+    mode: "loopback-v1" as const,
+    credentialEnv: "DSH_DEVKIT_APPROVAL_CONTROL_SECRET",
+    operatorId: "local-operator",
+    port: 0,
+  };
+  assert.deepEqual(
+    validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexApprovalControlPlane }).codexApprovalControlPlane,
+    codexApprovalControlPlane,
+  );
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexApprovalControlPlane: { ...codexApprovalControlPlane, credentialEnv: "PATH" } }), /INVALID_APPROVAL_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexApprovalControlPlane: { ...codexApprovalControlPlane, operatorId: "bad operator" } }), /INVALID_APPROVAL_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...disabledPolicy, executionMode: "disabled", codexApprovalControlPlane: { ...codexApprovalControlPlane, port: -1 } }), /INVALID_APPROVAL_CONTROL_PLANE/);
+  assert.throws(() => validateHostPolicy({ ...f.policy, codexApprovalControlPlane }), /LIVE_APPROVAL_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE/);
+});
 test("the deterministic native fixture guards the cloned base before it runs a command", async () => {
   const f = fixture();
   const runtime = new Devkit(f.policy, createPaginationFixtureAdapters());

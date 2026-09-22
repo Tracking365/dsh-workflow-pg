@@ -21,8 +21,11 @@ command/cwd approval fields without trusting a cross-turn item notification.
 Seatbelt boundary. `LocalCodexApprovalBroker` adds a bounded one-time pending queue that binds a
 decision to task/fingerprint, expires or declines on cancellation, and retains only a bounded,
 hashed audit record. `LocalApprovalControlPlane` presents that queue over authenticated loopback
-HTTP with an `HttpOnly` SameSite session, CSRF checks and a bounded session set; it is not yet
-wired into native policy.
+HTTP with an `HttpOnly` SameSite session, CSRF checks and a bounded session set. A disabled
+native host policy may now explicitly configure `codexApprovalControlPlane`; it reads the named
+host secret only to start the loopback listener, exposes no approval capability to a task, and
+closes the listener/broker on unload. It remains disconnected from the direct client and does not
+enable live execution.
 All of these pieces are covered only with synthetic peers and secrets: no current login,
 endpoint, or model was accessed, and the native live path remains disabled.
 
@@ -38,11 +41,11 @@ metadata; fixture is dependency-free JavaScript under a strict TypeScript plugin
 control-plane tests from compiler setup; trusted host supplies immutable test plans.
 
 Next work, in order:
-1. Bind the existing authenticated local approval presentation to native policy, and implement
-   an isolated App-Server-managed ChatGPT OAuth lifecycle in a private home (never copy/read the
-   existing login). Keep live disabled until model transport and candidate-command network
-   isolation are independently proven.
-2. Verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
+1. Implement and verify an isolated App-Server-managed ChatGPT OAuth lifecycle in a private home
+   (never copy/read the existing login), plus a model transport that cannot be borrowed by
+   candidate commands. Keep live disabled until both are independently proven.
+2. Wire the direct client to native execution only after that transport boundary exists; then
+   verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
    authorized disposable fixtures only.
 3. Add bounded project context, regression overlay/adjudication, and authenticated recovery
    control planes. Never reclaim a lease based on age alone.

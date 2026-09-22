@@ -117,9 +117,11 @@ entry. `LocalApprovalControlPlane` is an optional loopback-only HTML presentatio
 a trusted host supplies a 32+-character secret through a callback, the server retains only its
 hash, and the browser gets an `HttpOnly`, `SameSite=Strict` short-lived session plus a CSRF
 value. Sessions are bounded and pruned; the secret is never put in a URL, page, task record or
-DSH tool result; cross-origin POSTs are rejected and model-provided fields are HTML escaped.
-This is a local authentication mechanism for a future native wiring, not evidence that a
-configured DSH host identity is available today.
+DSH tool result; cross-origin POSTs are rejected and model-provided fields are HTML escaped. A
+disabled native policy may opt in through `codexApprovalControlPlane`; native reads only its
+explicit `DSH_DEVKIT_*` environment reference at listener startup, reports the loopback URL, and
+closes the listener/broker on plugin unload. This supplies an authenticated local presentation,
+not a direct-client executor, credential broker, or proof that a live DSH writer is safe.
 
 `MacosSeatbeltAppServerClientLaunch` composes that client with the existing Seatbelt boundary
 using only the canonical `node <package-local-wrapper> app-server --stdio` shape and an empty
@@ -162,8 +164,9 @@ mechanism; authenticated identity, expiry and approval presentation remain unimp
   has a host test for non-enumerability, but it is not yet a complete file-read whitelist or a
   separately killable execution VM. A direct JSONL client now has synthetic protocol coverage
   for strict per-request approvals, cancellation and exit-proof release. A loopback approval
-  queue/presentation has synthetic authentication and CSRF coverage, but it is not native-wired
-  and has no credential broker or actual-App-Server behavior evidence.
+  queue/presentation is now explicitly native-policy-wired and has synthetic authentication,
+  CSRF, startup-failure, and unload coverage, but no direct-client execution, credential broker,
+  or actual-App-Server behavior evidence.
   The separate readonly reviewer has a lazy host configuration path but no live behavior
   evidence. There is no credential broker; live runs remain blocked.
 * Recovery never infers quiescence from a PID, timeout or lease age. The durable restart and

@@ -5,7 +5,7 @@ import type { CommandSpec } from "../adapters/process.js";
 
 /** This schema belongs to the trusted host, never to a model-facing tool. */
 export function validateHostPolicy(value: unknown): HostPolicy {
-  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "codexAppServer", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
+  const p = object(value, ["dataRoot", "executionMode", "fixtureDriver", "reviewer", "codexAppServer", "codexApprovalControlPlane", "repositories", "verificationProfiles", "maxRetries", "maxDurationMs"]);
   const dataRoot = text(p.dataRoot, "dataRoot");
   const executionMode = String(p.executionMode);
   if (!path.isAbsolute(dataRoot) || !["disabled", "fixture"].includes(executionMode)) throw new DevkitError("INVALID_HOST_POLICY");
@@ -37,6 +37,23 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     if (!deniedReadRoots.length || deniedReadRoots.length > 20 || deniedReadRoots.some((root) => !path.isAbsolute(root))) throw new DevkitError("INVALID_APP_SERVER_BOUNDARY");
     codexAppServer = { mode: "macos-seatbelt-v1", deniedReadRoots };
   }
+  let codexApprovalControlPlane: HostPolicy["codexApprovalControlPlane"];
+  if (p.codexApprovalControlPlane !== undefined) {
+    if (executionMode === "fixture") throw new DevkitError("LIVE_APPROVAL_CONTROL_PLANE_NOT_ALLOWED_IN_FIXTURE");
+    const c = object(p.codexApprovalControlPlane, ["mode", "credentialEnv", "operatorId", "port"]);
+    if (c.mode !== "loopback-v1") throw new DevkitError("INVALID_APPROVAL_CONTROL_PLANE");
+    const credentialEnv = text(c.credentialEnv, "codexApprovalControlPlane.credentialEnv", 100);
+    if (!/^DSH_DEVKIT_[A-Z0-9_]{1,80}$/.test(credentialEnv)) throw new DevkitError("INVALID_APPROVAL_CONTROL_PLANE");
+    const operatorId = text(c.operatorId, "codexApprovalControlPlane.operatorId", 200);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$/.test(operatorId)) throw new DevkitError("INVALID_APPROVAL_CONTROL_PLANE");
+    if (c.port !== undefined && (!Number.isSafeInteger(c.port) || Number(c.port) < 0 || Number(c.port) > 65535)) throw new DevkitError("INVALID_APPROVAL_CONTROL_PLANE");
+    codexApprovalControlPlane = {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId,
+      ...(c.port === undefined ? {} : { port: Number(c.port) }),
+    };
+  }
   const map = (value: unknown): Record<string, unknown> => {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new DevkitError("INVALID_HOST_POLICY");
     return object(value, Object.keys(value));
@@ -64,6 +81,7 @@ export function validateHostPolicy(value: unknown): HostPolicy {
     ...(fixtureDriver === undefined ? {} : { fixtureDriver: fixtureDriver as "pagination-v1" }),
     ...(reviewer === undefined ? {} : { reviewer }),
     ...(codexAppServer === undefined ? {} : { codexAppServer }),
+    ...(codexApprovalControlPlane === undefined ? {} : { codexApprovalControlPlane }),
     repositories,
     verificationProfiles,
     maxRetries: Number(p.maxRetries),

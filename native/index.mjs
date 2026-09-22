@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DeepSeekReviewer, Devkit, DevkitError, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
+import { DeepSeekReviewer, Devkit, DevkitError, LocalApprovalControlPlane, LocalCodexApprovalBroker, MacosSeatbeltAppServerConfinement, assertPaginationFixturePolicy, createDshCandidateWorkspaceCodexExecutor, createPaginationFixtureAdapters, object, PAGINATION_FIXTURE_DRIVER, text, redact, validateHostPolicy } from "../dist/src/index.js";
 
 export const name = "devkit";
 export const inject = ["tools"];
@@ -74,7 +74,35 @@ function codexProviderMetadata(provider) {
   }
 }
 
-export function codexProviderStatus(ctx, managed) {
+/**
+ * The browser presentation is host-owned and opt-in. It is intentionally
+ * separate from the DSH provider: starting this listener neither starts an
+ * App Server nor grants the dormant writer any execution authority.
+ */
+async function installLocalApprovalControlPlane(policy) {
+  const configured = policy.codexApprovalControlPlane;
+  if (configured === undefined) return undefined;
+  const broker = new LocalCodexApprovalBroker();
+  const plane = new LocalApprovalControlPlane({
+    broker,
+    credential: () => process.env[configured.credentialEnv] ?? "",
+    operatorId: configured.operatorId,
+    ...(configured.port === undefined ? {} : { port: configured.port }),
+  });
+  try {
+    const { url } = await plane.start();
+    return {
+      broker,
+      url,
+      async dispose() { await plane.stop(); },
+    };
+  } catch (error) {
+    try { await plane.stop(); } catch { /* preserve the host startup failure */ }
+    throw error;
+  }
+}
+
+export function codexProviderStatus(ctx, managed, approvalControlPlane) {
   const subagents = ctx.get("subagents");
   if (!subagents || typeof subagents.getProvider !== "function") {
     return { state: "unconfigured", reason: "DSH_SUBAGENT_SERVICE_MISSING" };
@@ -136,6 +164,14 @@ export function codexProviderStatus(ctx, managed) {
     appServerBoundary: managedBoundary
       ? { state: "configured", id: managed.boundary.id, credentialBroker: "unimplemented" }
       : { state: "unconfigured", reason: "CODEX_PROVIDER_NOT_MANAGED_BY_DEVKIT" },
+    ...(approvalControlPlane === undefined ? {} : {
+      approvalControlPlane: {
+        state: "active",
+        transport: "loopback",
+        url: approvalControlPlane.url,
+        integration: "direct-client-pending",
+      },
+    }),
     liveValidated: false,
     inheritsParentContext: metadata.inheritsParentContext,
     capabilities: {
@@ -296,18 +332,31 @@ export async function apply(ctx, config = {}) {
     credential: () => process.env[policy.reviewer.credentialEnv] ?? "",
   });
   const runtime = new Devkit(policy, policy.executionMode === "fixture" ? createPaginationFixtureAdapters() : reviewer === undefined ? {} : { reviewer });
+  let approvalControlPlane;
   let managed;
   try {
+    approvalControlPlane = await installLocalApprovalControlPlane(policy);
     managed = await installManagedCodexProvider(ctx, policy);
   } catch (error) {
-    await runtime.close();
+    try {
+      await approvalControlPlane?.dispose();
+    } finally {
+      await runtime.close();
+    }
     throw error;
   }
   const dispose = async () => {
     try {
-      await runtime.close();
+      // Decline any outstanding local decision before cancelling the runtime.
+      // A future direct client can then leave its turn promptly rather than
+      // waiting for an approval timeout during plugin unload.
+      await approvalControlPlane?.dispose();
     } finally {
-      await managed?.dispose();
+      try {
+        await runtime.close();
+      } finally {
+        await managed?.dispose();
+      }
     }
   };
   try {
@@ -321,8 +370,16 @@ export async function apply(ctx, config = {}) {
           reviewer: policy.reviewer === undefined
             ? { state: "unconfigured" }
             : { state: "configured", provider: "deepseek", model: policy.reviewer.model, credential: "deferred" },
+          ...(approvalControlPlane === undefined ? {} : {
+            approvalControlPlane: {
+              state: "active",
+              transport: "loopback",
+              url: approvalControlPlane.url,
+              authentication: "host-secret",
+            },
+          }),
         },
-        codexSubagent: codexProviderStatus(ctx, managed),
+        codexSubagent: codexProviderStatus(ctx, managed, approvalControlPlane),
       }),
       fixtureMode: policy.executionMode === "fixture",
       executor: policy.executionMode === "fixture" ? undefined : exec => codexExecutor(ctx, exec, managed),

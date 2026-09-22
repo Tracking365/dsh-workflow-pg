@@ -330,6 +330,106 @@ test("native doctor configures an independent reviewer without probing its crede
   }
 });
 
+test("native policy starts and disposes the authenticated loopback approval presentation without enabling a writer", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-approval-plane-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_APPROVAL_TEST_SECRET";
+  const secret = "native-loopback-control-secret-32-bytes!";
+  const previous = process.env[credentialEnv];
+  process.env[credentialEnv] = secret;
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    codexApprovalControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-local-operator",
+      port: 0,
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  let mounted = ctx.plugin(plugin, { configPath });
+  let approvalUrl;
+  try {
+    await mounted;
+    const doctor = await call(ctx.tools, "devkit_doctor", {}, 1);
+    assert.equal(doctor.isError, false);
+    assert.equal(doctor.value.live.reason, "LIVE_SANDBOX_NOT_IMPLEMENTED");
+    assert.deepEqual(doctor.value.nativeRuntime.approvalControlPlane, {
+      state: "active",
+      transport: "loopback",
+      url: doctor.value.nativeRuntime.approvalControlPlane.url,
+      authentication: "host-secret",
+    });
+    approvalUrl = doctor.value.nativeRuntime.approvalControlPlane.url;
+    assert.match(approvalUrl, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const page = await fetch(`${approvalUrl}/`);
+    assert.equal(page.status, 200);
+    const html = await page.text();
+    assert.match(html, /Local approval secret/);
+    assert.equal(html.includes(secret), false);
+    const opened = await fetch(`${approvalUrl}/session`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { Origin: approvalUrl, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: secret }).toString(),
+    });
+    assert.equal(opened.status, 303);
+    assert.equal(ctx.tools.get("dev_task_run") !== undefined, true);
+
+    await mounted.dispose();
+    mounted = undefined;
+    await assert.rejects(fetch(`${approvalUrl}/`));
+  } finally {
+    await mounted?.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
+test("native approval presentation fails closed when its declared host secret is unavailable", async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-native-approval-secret-"));
+  const configPath = path.join(root, "policy.json");
+  const credentialEnv = "DSH_DEVKIT_NATIVE_APPROVAL_MISSING_SECRET";
+  const previous = process.env[credentialEnv];
+  delete process.env[credentialEnv];
+  writeFileSync(configPath, JSON.stringify({
+    dataRoot: path.join(root, "data"),
+    executionMode: "disabled",
+    codexApprovalControlPlane: {
+      mode: "loopback-v1",
+      credentialEnv,
+      operatorId: "native-local-operator",
+    },
+    repositories: {}, verificationProfiles: {}, maxRetries: 2, maxDurationMs: 10000,
+  }));
+
+  const ctx = new Context();
+  const disposePrompt = ctx.provide("systemPrompt", { tools: () => () => {} });
+  const toolsFiber = ctx.plugin(ToolRuntime);
+  await toolsFiber;
+  const plugin = { name: native.name, inject: native.inject, apply: native.apply };
+  const mounted = ctx.plugin(plugin, { configPath });
+  try {
+    await assert.rejects(async () => { await mounted; }, /APPROVAL_CONTROL_PLANE_CREDENTIAL_UNAVAILABLE/);
+    assert.equal(ctx.tools.get("devkit_doctor"), undefined);
+  } finally {
+    await mounted.dispose();
+    await toolsFiber.dispose();
+    await disposePrompt();
+    if (previous === undefined) delete process.env[credentialEnv];
+    else process.env[credentialEnv] = previous;
+  }
+});
+
 test("native doctor treats an externally mounted workspace-write provider as non-executable until DevKit owns its boundary", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-codex-workspace-write-"));
   const configPath = path.join(root, "policy.json");

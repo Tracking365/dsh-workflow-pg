@@ -205,8 +205,10 @@ client and loopback approval presentation are now covered. The direct client pro
 `workspaceWrite`/restricted-read/network-off turn policy, task/thread/turn approval binding,
 ephemeral-thread enforcement, notification binding, allowed file-change scope, default deny
 behavior, cancellation and exit-proof release. It has no native live wiring, credential,
-endpoint or model call. The local presentation has a
-synthetic secret/session/CSRF test but is likewise not mounted into DSH. The wire fixture
+endpoint or model call. The local presentation is now mounted by an explicit disabled native
+policy configuration: a synthetic host-secret test authenticates its loopback session, confirms
+the doctor-reported listener closes at plugin unload, and proves missing secrets reject mounting.
+It is still not connected to a direct-client executor. The wire fixture
 proves the locked provider maps `approve-for-me` to an explicit `sandbox: "workspace-write"`;
 native code reports that mode and an empty explicit provider env as protocol eligibility only;
 the missing credential broker and authenticated approval bridge keep executor launch disabled.
@@ -216,8 +218,8 @@ host-home directory data, TCP and Unix sockets, then removes private state after
 proof. It is not a complete macOS file-read whitelist. The candidate-parent
 path has not run inside a deployed live task. Cancellation through an actual App Server process,
 provider-specific wire edge cases, actual-App-Server cancellation, an authenticated human
-approval presentation wired into native policy, an independently isolated managed-OAuth and
-outbound-transport boundary, and live reviewer behavior remain
+approval presentation connected to a direct-client executor, an independently isolated
+managed-OAuth and outbound-transport boundary, and live reviewer behavior remain
 unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
@@ -230,7 +232,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (86 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (89 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

@@ -114,6 +114,32 @@ The optional reviewer block stores only a fixed HTTPS endpoint, model and an env
 reference; never put a token in the JSON file. The current disabled path does not read this
 variable or make a request.
 
+### Optional local approval presentation
+
+This opt-in does **not** enable Codex, a model connection, or `dev_task_run`. It only starts the
+authenticated loopback page used by a future direct App Server client. Choose a dedicated local
+secret with at least 32 characters; do not reuse a model or business credential.
+
+```sh
+export DSH_DEVKIT_APPROVAL_SECRET='a-local-secret-of-at-least-32-characters'
+```
+
+Add this host-owned block beside `reviewer` when starting DSH:
+
+```json
+"codexApprovalControlPlane": {
+  "mode": "loopback-v1",
+  "credentialEnv": "DSH_DEVKIT_APPROVAL_SECRET",
+  "operatorId": "local-operator",
+  "port": 0
+}
+```
+
+Only `127.0.0.1` is bound. With `port: 0`, `devkit_doctor` reports the allocated local URL; the
+page requires the secret above, and plugin shutdown closes the listener and declines pending
+requests. Missing, short, or invalid secrets fail plugin loading. The configured page remains
+presentation-only until the separate direct-client execution and transport gates are completed.
+
 Ask DSH to run doctor, create a bugfix task with alias demo/profile node-tap and acceptance
 ID A1, then inspect status/report. `dev_task_run` returns a blocked task with
 `LIVE_SANDBOX_NOT_IMPLEMENTED`. That is intentional. Do not use another shell tool to
