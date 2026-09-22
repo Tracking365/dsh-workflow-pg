@@ -7,6 +7,14 @@
 
 官方 provider 的协议夹具还证明，只有 `approve-for-me` 会显式下发 `sandbox: "workspace-write"`。这只是 provider 协议前置条件：锁定版本没有认证的 App Server 审批转发，且尚无凭据 broker，因此 native `doctor` 明确报告 writer 仍不可启动；它不是 OS 沙箱，也不会启用 live。
 
+2026-09-23 新增了一个独立的 App Server stdio JSONL 客户端原型，不再依赖或篡改该
+provider 的自动拒绝流。它强制 ephemeral 候选线程、受限读写、命令网络关闭，并对审批
+条目和终态通知都校验 task/thread/turn/item 绑定；伪造服务端已覆盖逐请求人工审批、取消和
+退出证明，并可复用既有 Seatbelt 启动封装。配套的本地审批队列与 loopback HTML 页面使用
+一次性 ID、过期/取消/容量拒绝、宿主密钥登录、`HttpOnly` 会话和 CSRF 校验；页面仍未接入
+DSH 原生策略。它们没有读取当前登录、没有模型网络或凭据 broker，也尚未接入 native live
+路径；因此不能把它们当作生产可用开关。
+
 ## 已实现
 
 TypeScript strict 领域层、严格任务/宿主策略校验、SQLite 事务任务与事件、持久仓库运行锁、任务创建时冻结基准提交、独立 Git 副本、包含未跟踪文件/二进制/模式的快照、冻结测试与范围检查、真实 Node TAP 验证、独立审核协议、待办去重、共享两次返修预算、补丁产物和宿主人工验收。重启时遗留的运行会变为 `interrupted` 并保留 lease；只有宿主侧、绑定当前快照事实且证明旧写入者已停止的恢复授权，才能保留旧副本并从冻结基准创建全新候选副本。
@@ -62,4 +70,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是设计可独立杀死且不向代码进程泄露凭据的 broker、完整读白名单或独立执行容器，并接入认证的恢复授权控制面，再覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是把现有审批页面接入 native 策略，并在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），再设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，最后覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。

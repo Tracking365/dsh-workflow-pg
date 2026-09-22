@@ -6,6 +6,20 @@ test-only, in-process adapter supplies fixed stream chunks to the real DSH Agent
 separate user-authorized, non-CI temporary fixture used the current Codex login once; its
 narrow evidence and limits are recorded below.
 
+On 2026-09-23, the direct App Server client was also checked against the official App Server
+protocol documentation. The stable local transport is newline-delimited JSON-RPC over stdio;
+the server can initiate command, file-change and permission approval requests, which a product
+client must answer with a decision bound to its active thread and turn. DevKit implements that
+client contract and a synthetic loopback human-approval presentation against local peers, rather
+than modifying the DSH provider's auto-decline stream. The official guidance says to use the Codex SDK for job/CI automation; DevKit is not
+claiming that its local interactive protocol adapter is a deployed production automation path.
+The WebSocket and remote Code Mode transport caveats do not apply to this stdio fixture, but are
+not a license to expose a listener or bypass the local credential/approval boundary.
+The same protocol documents an App-Server-managed ChatGPT OAuth flow, including device/browser
+login and token refresh owned by the App Server. If this integration progresses, it will use that
+flow only from a fresh private home; it will not read, copy or proxy the user's existing Codex
+login state.
+
 Sources:
 
 - `@deepseek-ai/dsh-tools@0.1.6-alpha.2`, installed at
@@ -186,7 +200,13 @@ that package-manager-only warning.
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
 registration, launcher lifecycle, declared permission/environment guard, official provider wire
 cancellation, one real official-provider cwd/write behavior, a standalone macOS Seatbelt command
-boundary, and an App-Server-shaped Seatbelt launch boundary are now covered. The wire fixture
+boundary, an App-Server-shaped Seatbelt launch boundary, and a synthetic direct App Server
+client and loopback approval presentation are now covered. The direct client proves the documented handshake, candidate-only
+`workspaceWrite`/restricted-read/network-off turn policy, task/thread/turn approval binding,
+ephemeral-thread enforcement, notification binding, allowed file-change scope, default deny
+behavior, cancellation and exit-proof release. It has no native live wiring, credential,
+endpoint or model call. The local presentation has a
+synthetic secret/session/CSRF test but is likewise not mounted into DSH. The wire fixture
 proves the locked provider maps `approve-for-me` to an explicit `sandbox: "workspace-write"`;
 native code reports that mode and an empty explicit provider env as protocol eligibility only;
 the missing credential broker and authenticated approval bridge keep executor launch disabled.
@@ -195,8 +215,9 @@ host evidence only for a fake wrapper; it denies candidate-external writes, conf
 host-home directory data, TCP and Unix sockets, then removes private state after managed-range
 proof. It is not a complete macOS file-read whitelist. The candidate-parent
 path has not run inside a deployed live task. Cancellation through an actual App Server process,
-provider-specific wire edge cases, restricted-read/approval controls exposed through the locked
-provider, an independently isolated credential broker, and live reviewer behavior remain
+provider-specific wire edge cases, actual-App-Server cancellation, an authenticated human
+approval presentation wired into native policy, an independently isolated managed-OAuth and
+outbound-transport boundary, and live reviewer behavior remain
 unverified.
 A01–A05 therefore remain partial. The default native policy keeps `executionMode: "disabled"`;
 `pagination-v1` is only a double-opt-in, content-locked regression fixture and does not alter
@@ -209,8 +230,8 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (74 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
-`npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` all passed on 2026-09-22. The launcher and
+`npm test` (86 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized
 current-login invocation.

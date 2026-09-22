@@ -97,6 +97,40 @@ credential broker, so native writer launch remains false even when both the prov
 are mounted. This configuration guard does not make either provider mode an OS sandbox. The
 default disabled policy rejects a task before this composition is invoked.
 
+`CodexAppServerExecutor` is a separate direct stdio JSONL client for the documented App
+Server protocol. It is deliberately not a stream interceptor for the DSH provider. It sends
+one stable-only `initialize`/`initialized` handshake, requires an ephemeral candidate-bound
+thread, and starts a turn with `approvalPolicy: "onRequest"`, one writable/readable candidate
+root, and `networkAccess: false`. Command/file approvals are routed only when their task,
+thread, turn, item, cwd and path bindings match the active run. Both item-start and terminal
+notifications must identify that same thread/turn; bounded caches are a compatibility aid, not
+an authority source. Network requests, cross-thread requests, missing file-change items,
+out-of-scope paths and permission expansion are declined; MCP elicitation is declined and
+generic user-input receives an empty answer map. The broker API can return only per-request
+`accept` or `decline`, never `acceptForSession`. It is a host-only interface, not a model tool
+and not an authentication system.
+
+`LocalCodexApprovalBroker` is the host-side queue implementation for that interface. It creates
+an opaque one-time ID, binds resolution to the task and fingerprint, rejects on abort/expiry/
+shutdown or queue saturation, and records only a hash of the approval ID in a bounded audit
+entry. `LocalApprovalControlPlane` is an optional loopback-only HTML presentation for the queue:
+a trusted host supplies a 32+-character secret through a callback, the server retains only its
+hash, and the browser gets an `HttpOnly`, `SameSite=Strict` short-lived session plus a CSRF
+value. Sessions are bounded and pruned; the secret is never put in a URL, page, task record or
+DSH tool result; cross-origin POSTs are rejected and model-provided fields are HTML escaped.
+This is a local authentication mechanism for a future native wiring, not evidence that a
+configured DSH host identity is available today.
+
+`MacosSeatbeltAppServerClientLaunch` composes that client with the existing Seatbelt boundary
+using only the canonical `node <package-local-wrapper> app-server --stdio` shape and an empty
+explicit environment. It has no ambient-login or secret fallback. The current Seatbelt profile
+denies all network, so this path cannot reach a model; the client/launch tests use a synthetic
+JSONL peer only. The documented future direction is a fresh private App Server home using its
+own managed ChatGPT OAuth lifecycle, rather than reading or copying the user's existing Codex
+tokens. That still needs a narrowly scoped outbound-transport design which cannot be borrowed by
+candidate commands, plus an explicit authorized fixture. Until those controls are designed,
+reviewed and exercised, native live execution remains disabled.
+
 A host policy may configure the separate DeepSeek reviewer with an HTTPS completions endpoint,
 fixed model and a `DSH_DEVKIT_*` credential environment-variable name. The secret itself is not
 accepted in JSON, is read only at an eventual review call, and is never handed to the Codex
@@ -126,8 +160,12 @@ mechanism; authenticated identity, expiry and approval presentation remain unimp
   fake wrapper only; it does not supply an isolated model credential or prove actual-App-Server
   cancellation. The App Server profile blocks the main ambient home/config/cache locations and
   has a host test for non-enumerability, but it is not yet a complete file-read whitelist or a
-  separately killable execution VM. The separate readonly reviewer has a lazy host configuration
-  path but no live behavior evidence. There is no credential broker; live runs remain blocked.
+  separately killable execution VM. A direct JSONL client now has synthetic protocol coverage
+  for strict per-request approvals, cancellation and exit-proof release. A loopback approval
+  queue/presentation has synthetic authentication and CSRF coverage, but it is not native-wired
+  and has no credential broker or actual-App-Server behavior evidence.
+  The separate readonly reviewer has a lazy host configuration path but no live behavior
+  evidence. There is no credential broker; live runs remain blocked.
 * Recovery never infers quiescence from a PID, timeout or lease age. The durable restart and
   host-only fresh-clone path are fixture-tested, but the shipped native DSH profile has no
   authenticated `RecoveryAuthority`; public `resume` therefore still raises
