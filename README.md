@@ -16,6 +16,15 @@ provider 的自动拒绝流。它强制 ephemeral 候选线程、受限读写、
 启动该页面并在卸载时关闭它；它仍未接入 direct client 的执行路径。它们没有读取当前登录、
 没有模型网络或凭据 broker，因此不能把它们当作生产可用开关。
 
+同日还把 App Server 的通用 JSONL 传输拆成共享层，并加入 `CodexManagedAuthSession` 的
+账户协议最小面：它只能经一个与候选写入器不兼容、没有 workspace/cwd 参数的宿主 launch
+seam 使用 `account/read`、受管 ChatGPT 的浏览器/设备码 `account/login/start` 和
+`account/login/cancel`。它拒绝 API key、外部 ChatGPT token、登出、线程/turn/工具和服务端
+token-refresh 请求；账户状态不暴露 email/token，登录 URL/设备码也只作为内存中的宿主展示
+材料存在。全部测试使用伪 JSONL peer，未启动 OAuth、浏览器、Codex 或网络。该 seam 还没有
+实现私有持久 home 或不可被候选命令借用的出站通道，因此不是 credential broker，也没有接入
+native 策略或 live writer。
+
 同日核心任务增加了受限的冻结上下文：宿主可在仓库策略中用 `contextPaths` 声明精确文件或
 目录白名单，任务仅可选择最多 8 个其中的相对文件。正文从任务创建时已固定的 Git 基准读取，
 只接受 UTF-8 小文本且拒绝疑似密钥；候选副本在执行器前必须逐文件哈希匹配。任务、状态与事件
@@ -97,4 +106,4 @@ dsh plugin --profile devkit-eval add @deepseek-ai/dsh-subagent-codex@0.1.6-alpha
 
 ## 后续重点
 
-候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批/恢复/高风险裁决页面、冻结上下文、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。下一步是在全新私有 App Server home 内验证其自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。
+候选副本父会话的组成、官方 provider 的 cwd seam、受控协议层取消、声明式 workspace-write 前置条件、一个可复用的 macOS 命令隔离器、受管 App Server 启动封装、native 策略驱动的本地审批/恢复/高风险裁决页面、冻结上下文、崩溃后保留 lease 的恢复内核与一次真实 App Server fixture 已有证据；独立审核器的安全配置路径也已接入但尚未实际调用。账户协议现在有严格的合成实现，但下一步仍是实现并验证全新私有 App Server home 的自管 ChatGPT OAuth（绝不读取或复制现有登录），设计不能被候选命令借用的出站传输边界、完整读白名单或独立执行容器，再将 direct client 接入 native 执行并覆盖真实 App Server 的取消边界与独立审核行为。一次受控运行不能替代可重复的安全验证。UI 修复和需求开发仍是 M4/M5，不在本增量中假装完成。

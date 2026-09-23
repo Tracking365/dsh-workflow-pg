@@ -16,9 +16,11 @@ claiming that its local interactive protocol adapter is a deployed production au
 The WebSocket and remote Code Mode transport caveats do not apply to this stdio fixture, but are
 not a license to expose a listener or bypass the local credential/approval boundary.
 The same protocol documents an App-Server-managed ChatGPT OAuth flow, including device/browser
-login and token refresh owned by the App Server. If this integration progresses, it will use that
-flow only from a fresh private home; it will not read, copy or proxy the user's existing Codex
-login state.
+login and token refresh owned by the App Server. `CodexManagedAuthSession` now has synthetic
+coverage for only that account protocol: browser/device-code start, matching completion/cancel,
+sanitized account read and rejection of external-token refresh. Its launch contract accepts no
+candidate workspace/cwd or credentials. It will still use the real flow only from a fresh private
+home; it will not read, copy or proxy the user's existing Codex login state.
 
 Sources:
 
@@ -200,8 +202,9 @@ that package-manager-only warning.
 The published registry, offline agent-session tool flow, candidate-parent composition, provider
 registration, launcher lifecycle, declared permission/environment guard, official provider wire
 cancellation, one real official-provider cwd/write behavior, a standalone macOS Seatbelt command
-boundary, an App-Server-shaped Seatbelt launch boundary, and a synthetic direct App Server
-client plus loopback approval/recovery/finding-adjudication presentations are now covered. The direct client proves the documented handshake, candidate-only
+boundary, an App-Server-shaped Seatbelt launch boundary, a synthetic direct App Server client,
+and a separate synthetic managed-auth account client plus loopback approval/recovery/finding-
+adjudication presentations are now covered. The direct client proves the documented handshake, candidate-only
 `workspaceWrite`/restricted-read/network-off turn policy, task/thread/turn approval binding,
 ephemeral-thread enforcement, notification binding, allowed file-change scope, default deny
 behavior, cancellation and exit-proof release. It has no native live wiring, credential,
@@ -223,7 +226,8 @@ This is a provider protocol fact, not OS containment. The App Server boundary ha
 host evidence only for a fake wrapper; it denies candidate-external writes, configured reads,
 host-home directory data, TCP and Unix sockets, then removes private state after managed-range
 proof. It is not a complete macOS file-read whitelist. The candidate-parent
-path has not run inside a deployed live task. Cancellation through an actual App Server process,
+path has not run inside a deployed live task. The managed-auth account client is not a private-home
+launcher, OAuth run, or network transport. Cancellation through an actual App Server process,
 provider-specific wire edge cases, actual-App-Server cancellation, an authenticated human
 approval presentation connected to a direct-client executor, an independently isolated
 managed-OAuth and outbound-transport boundary, and live reviewer behavior remain
@@ -239,7 +243,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (109 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (120 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

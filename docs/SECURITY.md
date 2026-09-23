@@ -136,6 +136,20 @@ generic user-input receives an empty answer map. The broker API can return only 
 `accept` or `decline`, never `acceptForSession`. It is a host-only interface, not a model tool
 and not an authentication system.
 
+`CodexManagedAuthSession` reuses only the strict JSONL transport, but has a deliberately
+incompatible host launch contract: it accepts neither workspace/cwd/task data nor an argv,
+environment, API key, external token, thread, turn, tool, approval, or logout operation. Its
+whole feature surface is stable `initialize`, `account/read`, managed-ChatGPT browser/device-code
+`account/login/start`, and matching `account/login/cancel`. Account reads accept only a managed
+`chatgpt` account or an unauthenticated OpenAI-required state; email, plan metadata, tokens and
+server error text are not returned. Browser URLs and device codes are ephemeral in-memory values
+for a future host-owned presentation, never task/artifact/event/log values. Unexpected server
+requests—including external-token refresh—receive `-32601`; only a matching login-completed
+notification can settle an attempt. The session bounds one active login, cancellation, timeout,
+exit, and release proof. This is synthetic protocol coverage, not a credential broker: no concrete
+launch currently owns a persistent private Codex home or narrowly scoped outbound transport, and
+the session is not native-policy wired or callable by a task.
+
 `LocalCodexApprovalBroker` is the host-side queue implementation for that interface. It creates
 an opaque one-time ID, binds resolution to the task and fingerprint, rejects on abort/expiry/
 shutdown or queue saturation, and records only a hash of the approval ID in a bounded audit
@@ -155,9 +169,11 @@ explicit environment. It has no ambient-login or secret fallback. The current Se
 denies all network, so this path cannot reach a model; the client/launch tests use a synthetic
 JSONL peer only. The documented future direction is a fresh private App Server home using its
 own managed ChatGPT OAuth lifecycle, rather than reading or copying the user's existing Codex
-tokens. That still needs a narrowly scoped outbound-transport design which cannot be borrowed by
-candidate commands, plus an explicit authorized fixture. Until those controls are designed,
-reviewed and exercised, native live execution remains disabled.
+tokens. `CodexManagedAuthSession` now fixes the account-protocol surface for that future path,
+but the actual private-home launch and narrowly scoped outbound-transport design which cannot be
+borrowed by candidate commands still need to be built and exercised in an explicit authorized
+fixture. Until those controls are designed, reviewed and exercised, native live execution remains
+disabled.
 
 A host policy may configure the separate DeepSeek reviewer with an HTTPS completions endpoint,
 fixed model and a `DSH_DEVKIT_*` credential environment-variable name. The secret itself is not
@@ -201,7 +217,10 @@ identity, or a live-review guarantee.
   cancellation. The App Server profile blocks the main ambient home/config/cache locations and
   has a host test for non-enumerability, but it is not yet a complete file-read whitelist or a
   separately killable execution VM. A direct JSONL client now has synthetic protocol coverage
-  for strict per-request approvals, cancellation and exit-proof release. Loopback approval,
+  for strict per-request approvals, cancellation and exit-proof release. A separate synthetic
+  managed-auth account client accepts only the documented ChatGPT browser/device-code lifecycle,
+  rejects external token refresh, and requires exit/release proof, but has no real private-home
+  launcher, OAuth, browser, or outbound transport. Loopback approval,
   recovery, and high-risk finding-adjudication presentations are explicitly native-policy-wired
   with synthetic authentication, CSRF, startup-failure, and unload coverage, but no direct-client
   execution, credential broker, or actual-App-Server behavior evidence.

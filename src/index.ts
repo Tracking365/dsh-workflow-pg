@@ -6,6 +6,7 @@ export * from "./adapters/process.js";
 export * from "./adapters/macos-seatbelt.js";
 export * from "./adapters/macos-seatbelt-app-server.js";
 export * from "./adapters/codex-app-server-client.js";
+export * from "./adapters/codex-managed-auth.js";
 export * from "./adapters/macos-seatbelt-app-server-client.js";
 export * from "./adapters/local-approval-broker.js";
 export * from "./adapters/local-approval-control-plane.js";

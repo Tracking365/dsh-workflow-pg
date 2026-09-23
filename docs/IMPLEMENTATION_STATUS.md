@@ -29,6 +29,16 @@ enable live execution.
 All of these pieces are covered only with synthetic peers and secrets: no current login,
 endpoint, or model was accessed, and the native live path remains disabled.
 
+Managed-auth protocol increment (2026-09-23): `CodexManagedAuthSession` shares the strict stdio
+transport but has a separate `private-managed-chatgpt-oauth` launch contract with no candidate
+workspace/cwd/task/argv/environment/credential input. It permits only account reads, Codex-managed
+ChatGPT browser/device-code start, matching cancellation and a matching completion notification;
+API keys, external ChatGPT tokens, logout, thread/turn/tool calls, and server token-refresh requests
+are absent or rejected. It exposes a sanitized authenticated/unauthenticated status and keeps login
+URL/device-code material only in memory. Synthetic peers cover browser success, device cancellation,
+wrong account type, external-refresh rejection, startup abort and exit/release failure. No private
+persistent home, real OAuth/browser, network transport, native policy wiring or live writer exists.
+
 Frozen-context increment (2026-09-23): a host can authorize exact files/directories through
 `RepositoryPolicy.contextPaths`; task `contextRefs` then freeze up to eight UTF-8 Git-base blobs
 (4 KiB each, 6 KiB total) into a private 0700/0600 manifest artifact. Task records/events retain
@@ -80,8 +90,8 @@ metadata; fixture is dependency-free JavaScript under a strict TypeScript plugin
 control-plane tests from compiler setup; trusted host supplies immutable test plans.
 
 Next work, in order:
-1. Implement and verify an isolated App-Server-managed ChatGPT OAuth lifecycle in a private home
-   (never copy/read the existing login), plus a model transport that cannot be borrowed by
+1. Implement and verify the concrete isolated App-Server-managed ChatGPT OAuth launch in a private
+   home (never copy/read the existing login), plus a model transport that cannot be borrowed by
    candidate commands. Keep live disabled until both are independently proven.
 2. Wire the direct client to native execution only after that transport boundary exists; then
    verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly

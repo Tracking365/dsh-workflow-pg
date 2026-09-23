@@ -1,20 +1,26 @@
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { createInterface, type Interface } from "node:readline";
 import { hash } from "../contracts/task.js";
 import { redact, resolveRealWithin } from "../domain/security.js";
 import type { CodeExecutor, ExecutionRequest, ExecutionResult } from "../plugins/tasks.js";
 import { dshCodexPrompt } from "./executor-dsh-codex.js";
+import {
+  CodexAppServerDeferred as Deferred,
+  CodexAppServerJsonlConnection as JsonlConnection,
+  CodexAppServerProtocolError as ProtocolError,
+  codexAppServerBoundedText,
+  codexAppServerRecord,
+  codexAppServerRpcIdKey,
+  type CodexAppServerRequest as ServerRequest,
+} from "./codex-app-server-jsonl.js";
 import type { AppServerSubprocessHandle } from "./macos-seatbelt-app-server.js";
 
-const MAX_JSONL_LINE_BYTES = 256 * 1024;
 const MAX_RPC_TEXT_CHARS = 16 * 1024;
 const MAX_PENDING_PROTOCOL_EVENTS = 100;
 const MAX_CACHED_APPROVAL_ITEMS = 256;
 const CLIENT_INFO = { name: "dsh_devkit", title: "DSH DevKit", version: "0.1.0" } as const;
 
 type JsonObject = Record<string, unknown>;
-type RpcId = string | number;
 type ApprovalDecision = "accept" | "decline";
 
 export interface PreparedCodexAppServerClient {
@@ -68,51 +74,16 @@ export interface CodexAppServerExecutorOptions {
   readonly clientInfo?: { readonly name: string; readonly title: string; readonly version: string };
 }
 
-class ProtocolError extends Error {
-  constructor(readonly code: string) { super(code); this.name = "ProtocolError"; }
-}
-
-class Deferred<T> {
-  readonly promise: Promise<T>;
-  private settled = false;
-  private resolvePromise!: (value: T) => void;
-  private rejectPromise!: (reason?: unknown) => void;
-
-  constructor() {
-    this.promise = new Promise<T>((resolve, reject) => {
-      this.resolvePromise = resolve;
-      this.rejectPromise = reject;
-    });
-  }
-
-  resolve(value: T): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.resolvePromise(value);
-  }
-
-  reject(reason: unknown): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.rejectPromise(reason);
-  }
-}
-
 function record(value: unknown): JsonObject | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : undefined;
+  return codexAppServerRecord(value);
 }
 
 function boundedText(value: unknown, limit = MAX_RPC_TEXT_CHARS): string | undefined {
-  return typeof value === "string" && value.length > 0 && value.length <= limit && !value.includes("\0") ? value : undefined;
+  return codexAppServerBoundedText(value, limit);
 }
 
-function rpcId(value: unknown): RpcId | undefined {
-  if (typeof value === "string") return value.length > 0 && value.length <= 200 && !value.includes("\0") ? value : undefined;
-  return typeof value === "number" && Number.isSafeInteger(value) ? value : undefined;
-}
-
-function rpcIdKey(value: RpcId): string {
-  return `${typeof value}:${String(value)}`;
+function rpcIdKey(value: ServerRequest["id"]): string {
+  return codexAppServerRpcIdKey(value);
 }
 
 function canonicalDirectory(value: string): string | undefined {
@@ -152,159 +123,6 @@ function allowedRelativePath(workspace: string, value: unknown, allowedPaths: re
     return allowedPaths.some((entry) => normalized === entry || (entry.endsWith("/") && normalized.startsWith(entry))) ? normalized : undefined;
   } catch {
     return undefined;
-  }
-}
-
-interface ServerRequest { readonly id: RpcId; readonly method: string; readonly params: unknown }
-interface Notification { readonly method: string; readonly params: unknown }
-
-/** Minimal strict JSONL transport for the stable App Server protocol surface. */
-class JsonlConnection {
-  private readonly pending = new Map<string, Deferred<unknown>>();
-  private readonly lines: Interface;
-  private nextId = 1;
-  private disposed = false;
-  private failed = false;
-
-  constructor(
-    private readonly child: AppServerSubprocessHandle,
-    private readonly handlers: {
-      onServerRequest: (request: ServerRequest) => Promise<void>;
-      onNotification: (notification: Notification) => void;
-      onFailure: (error: ProtocolError) => void;
-    },
-  ) {
-    if (child.stdin === undefined || child.stdout === undefined) throw new ProtocolError("CODEX_APP_SERVER_STREAMS_UNAVAILABLE");
-    this.lines = createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY });
-    this.lines.on("line", (line) => { void this.receive(line); });
-    this.lines.on("close", () => {
-      if (!this.disposed) this.fail(new ProtocolError("CODEX_APP_SERVER_STREAM_CLOSED"));
-    });
-    child.stdout.on("error", () => this.fail(new ProtocolError("CODEX_APP_SERVER_STREAM_FAILED")));
-    child.stdin.on("error", () => this.fail(new ProtocolError("CODEX_APP_SERVER_STREAM_FAILED")));
-  }
-
-  async request(method: string, params: JsonObject): Promise<unknown> {
-    const id = this.nextId++;
-    const deferred = new Deferred<unknown>();
-    this.pending.set(rpcIdKey(id), deferred);
-    try {
-      await this.send({ method, id, params });
-    } catch (error) {
-      this.pending.delete(rpcIdKey(id));
-      deferred.reject(error);
-    }
-    return deferred.promise;
-  }
-
-  notify(method: string, params: JsonObject): Promise<void> {
-    return this.send({ method, params });
-  }
-
-  respond(id: RpcId, result: JsonObject): Promise<void> {
-    return this.send({ id, result });
-  }
-
-  respondError(id: RpcId, code: number, message: string): Promise<void> {
-    return this.send({ id, error: { code, message } });
-  }
-
-  dispose(): void {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.lines.close();
-    for (const deferred of this.pending.values()) deferred.reject(new ProtocolError("CODEX_APP_SERVER_CONNECTION_CLOSED"));
-    this.pending.clear();
-  }
-
-  private async send(message: JsonObject): Promise<void> {
-    if (this.disposed || this.failed || this.child.stdin === undefined) throw new ProtocolError("CODEX_APP_SERVER_CONNECTION_CLOSED");
-    const line = JSON.stringify(message);
-    if (Buffer.byteLength(line, "utf8") > MAX_JSONL_LINE_BYTES) throw new ProtocolError("CODEX_APP_SERVER_MESSAGE_TOO_LARGE");
-    const input = this.child.stdin;
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const complete = (error?: Error | null) => {
-        if (settled) return;
-        settled = true;
-        input.off("error", onError);
-        if (error) reject(error);
-        else resolve();
-      };
-      const onError = (error: Error) => complete(error);
-      input.once("error", onError);
-      try {
-        input.write(`${line}\n`, complete);
-      } catch (error) {
-        complete(error instanceof Error ? error : new ProtocolError("CODEX_APP_SERVER_STREAM_FAILED"));
-      }
-    });
-  }
-
-  private async receive(line: string): Promise<void> {
-    if (this.disposed || this.failed) return;
-    if (Buffer.byteLength(line, "utf8") > MAX_JSONL_LINE_BYTES) {
-      this.fail(new ProtocolError("CODEX_APP_SERVER_MESSAGE_TOO_LARGE"));
-      return;
-    }
-    let message: JsonObject | undefined;
-    try {
-      message = record(JSON.parse(line));
-    } catch {
-      this.fail(new ProtocolError("CODEX_APP_SERVER_INVALID_JSON"));
-      return;
-    }
-    if (message === undefined) {
-      this.fail(new ProtocolError("CODEX_APP_SERVER_INVALID_MESSAGE"));
-      return;
-    }
-    const method = boundedText(message.method, 200);
-    const hasId = Object.hasOwn(message, "id");
-    const id = hasId ? rpcId(message.id) : undefined;
-    if (method !== undefined) {
-      if (hasId) {
-        if (id === undefined) this.fail(new ProtocolError("CODEX_APP_SERVER_INVALID_REQUEST_ID"));
-        else {
-          try {
-            await this.handlers.onServerRequest({ id, method, params: message.params });
-          } catch {
-            this.fail(new ProtocolError("CODEX_APP_SERVER_REQUEST_HANDLER_FAILED"));
-          }
-        }
-      } else {
-        try {
-          this.handlers.onNotification({ method, params: message.params });
-        } catch {
-          this.fail(new ProtocolError("CODEX_APP_SERVER_NOTIFICATION_HANDLER_FAILED"));
-        }
-      }
-      return;
-    }
-    if (!hasId || id === undefined) {
-      this.fail(new ProtocolError("CODEX_APP_SERVER_INVALID_MESSAGE"));
-      return;
-    }
-    const deferred = this.pending.get(rpcIdKey(id));
-    if (deferred === undefined) {
-      this.fail(new ProtocolError("CODEX_APP_SERVER_UNKNOWN_RESPONSE"));
-      return;
-    }
-    this.pending.delete(rpcIdKey(id));
-    if (Object.hasOwn(message, "error")) {
-      deferred.reject(new ProtocolError("CODEX_APP_SERVER_RPC_ERROR"));
-    } else if (Object.hasOwn(message, "result")) {
-      deferred.resolve(message.result);
-    } else {
-      deferred.reject(new ProtocolError("CODEX_APP_SERVER_INVALID_RESPONSE"));
-    }
-  }
-
-  private fail(error: ProtocolError): void {
-    if (this.disposed || this.failed) return;
-    this.failed = true;
-    try { this.handlers.onFailure(error); } catch { /* pending requests still fail below */ }
-    for (const deferred of this.pending.values()) deferred.reject(error);
-    this.pending.clear();
   }
 }
 
