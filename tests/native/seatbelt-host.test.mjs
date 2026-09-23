@@ -293,14 +293,25 @@ test("the managed-auth launch preserves only private CODEX_HOME and still denies
       "import fs from 'node:fs';",
       "import net from 'node:net';",
       "import path from 'node:path';",
-      `const result = { argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME, home: process.env.HOME };`,
+      `const result = { argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME, home: process.env.HOME, proxyEnvironmentSet: process.env.HTTP_PROXY === process.env.HTTPS_PROXY && process.env.HTTPS_PROXY === process.env.https_proxy && process.env.NO_PROXY === '' && process.env.no_proxy === '' };`,
       "try { fs.writeFileSync(path.join(process.env.CODEX_HOME, 'state-marker.txt'), 'managed'); result.stateWriteAllowed = true; } catch { result.stateWriteAllowed = false; }",
       `try { fs.readdirSync(${JSON.stringify(candidate)}); result.candidateReadDenied = false; } catch { result.candidateReadDenied = true; }`,
       `try { fs.writeFileSync(${JSON.stringify(path.join(control, "forbidden.txt"))}, 'forbidden'); result.controlWriteDenied = false; } catch { result.controlWriteDenied = true; }`,
       `try { fs.readFileSync(${JSON.stringify(protectedFile)}, 'utf8'); result.protectedReadDenied = false; } catch { result.protectedReadDenied = true; }`,
       `try { fs.readdirSync(${JSON.stringify(hostHome)}); result.hostHomeListingDenied = false; } catch { result.hostHomeListingDenied = true; }`,
+      "const connectStatus = (host, port, request) => new Promise((resolve) => {",
+      "  const socket = net.createConnection({ host, port }); let response = ''; let settled = false;",
+      "  const done = value => { if (settled) return; settled = true; clearTimeout(timer); socket.destroy(); resolve(value); };",
+      "  const timer = setTimeout(() => done('TIMEOUT'), 1500);",
+      "  socket.on('connect', () => { if (request) socket.write(request); else done('CONNECTED'); });",
+      "  socket.on('data', chunk => { response += chunk.toString('latin1'); if (response.includes('\\r\\n\\r\\n')) done(response.split('\\r\\n')[0]); });",
+      "  socket.on('error', () => done('DENIED'));",
+      "});",
+      "let proxy; try { proxy = new URL(process.env.HTTPS_PROXY); } catch {}",
+      "result.proxyReachable = proxy ? await connectStatus(proxy.hostname, Number(proxy.port), 'CONNECT auth.openai.com:443 HTTP/1.1\\r\\nHost: auth.openai.com:443\\r\\nProxy-Authorization: Basic invalid\\r\\n\\r\\n') : 'MISSING';",
+      `result.otherLoopbackDenied = await connectStatus('127.0.0.1', ${JSON.stringify(port)});`,
       "result.networkDenied = await new Promise((resolve) => {",
-      `  const socket = net.createConnection({ host: '127.0.0.1', port: ${JSON.stringify(port)} });`,
+      "  const socket = net.createConnection({ host: '1.1.1.1', port: 443 });",
       "  const timer = setTimeout(() => { socket.destroy(); resolve(true); }, 1500);",
       "  socket.on('connect', () => { clearTimeout(timer); socket.destroy(); resolve(false); });",
       "  socket.on('error', () => { clearTimeout(timer); resolve(true); });",
@@ -340,7 +351,10 @@ test("the managed-auth launch preserves only private CODEX_HOME and still denies
     assert.equal(result.protectedReadDenied, true);
     assert.equal(result.hostHomeListingDenied, true);
     assert.equal(result.networkDenied, true);
-    assert.equal(connections, 0, "the managed-auth process must not reach a loopback service");
+    assert.equal(result.otherLoopbackDenied, "DENIED");
+    assert.equal(result.proxyEnvironmentSet, true);
+    assert.match(result.proxyReachable, /^HTTP\/1\.1 407 /);
+    assert.equal(connections, 0, "the managed-auth process must not reach an unrelated loopback service");
     assert.equal(existsSync(path.join(state.path, "state-marker.txt")), true);
     assert.equal(existsSync(result.home), true, "ephemeral HOME remains until managed child exit is proven");
     assert.equal(await prepared.release(true), true);

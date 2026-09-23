@@ -11,6 +11,7 @@ import {
   type AppServerSubprocessHandle,
 } from "./macos-seatbelt-app-server.js";
 import { probeMacosSeatbelt, seatbeltReadRestrictedProfile, type SeatbeltCapability } from "./macos-seatbelt.js";
+import { ManagedAuthEgressProxy } from "./managed-auth-egress-proxy.js";
 import type { PrivateCodexStateRoot } from "./private-codex-state.js";
 
 const DEFAULT_SANDBOX_EXEC = "/usr/bin/sandbox-exec";
@@ -50,8 +51,9 @@ function directories(values: readonly string[], code: string): readonly string[]
 
 /**
  * Dedicated macOS launch for the private managed-auth protocol. It has no
- * candidate cwd and always denies network, so it can safely establish the
- * persistent-state/filesystem contract but cannot yet run OAuth or a model.
+ * candidate cwd and may connect only to a per-session loopback CONNECT proxy
+ * that allows the OpenAI login host on port 443. This capability must never be
+ * reused by task or candidate execution.
  */
 export class MacosSeatbeltManagedAuthLaunch implements CodexManagedAuthLaunch {
   readonly purpose = "private-managed-chatgpt-oauth" as const;
@@ -84,35 +86,43 @@ export class MacosSeatbeltManagedAuthLaunch implements CodexManagedAuthLaunch {
 
   async prepare(signal: AbortSignal): Promise<PreparedCodexManagedAuthServer> {
     if (this.active) throw new DevkitError("MANAGED_AUTH_LAUNCH_ALREADY_ACTIVE");
-    signal.throwIfAborted();
-    const capability = await this.status();
-    signal.throwIfAborted();
-    if (capability.state !== "supported") throw new DevkitError("SANDBOX_UNAVAILABLE", capability.reason);
-    const argv = [process.execPath, this.wrapper, "app-server", "--stdio"] as const;
-    if (!isOfficialAppServerArgv(argv)) throw new DevkitError("INVALID_MANAGED_AUTH_LAUNCH");
-    const temporary = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-seatbelt-managed-auth-"));
     this.active = true;
+    let temporary: string | undefined;
+    let proxy: ManagedAuthEgressProxy | undefined;
     let child: AppServerSubprocessHandle;
     let rangeExited = false;
     let released = false;
     try {
       signal.throwIfAborted();
+      const capability = await this.status();
+      signal.throwIfAborted();
+      if (capability.state !== "supported") throw new DevkitError("SANDBOX_UNAVAILABLE", capability.reason);
+      const argv = [process.execPath, this.wrapper, "app-server", "--stdio"] as const;
+      if (!isOfficialAppServerArgv(argv)) throw new DevkitError("INVALID_MANAGED_AUTH_LAUNCH");
+      const privateTemporary = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-seatbelt-managed-auth-"));
+      temporary = privateTemporary;
+      const egressProxy = new ManagedAuthEgressProxy();
+      proxy = egressProxy;
+      const proxyBinding = await egressProxy.start();
+      signal.throwIfAborted();
       const profile = seatbeltReadRestrictedProfile({
-        writableRoots: [this.options.state.path, temporary],
+        writableRoots: [this.options.state.path, privateTemporary],
         deniedReadRoots: this.deniedReadRoots,
-        ...appServerReadProfileInputs(this.options.state.path, temporary, argv),
+        loopbackConnectPort: proxyBinding.port,
+        ...appServerReadProfileInputs(this.options.state.path, privateTemporary, argv),
       });
       child = this.options.subprocess.spawn({
         argv: [this.sandboxExec, "-p", profile, "--", ...argv],
         cwd: this.options.state.path,
-        env: appServerEnvironment(temporary, this.options.state.path),
+        env: managedAuthEnvironment(privateTemporary, this.options.state.path, proxyBinding.url),
         stdio: { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
         graceMs: this.graceMs,
         signal,
       });
     } catch (error) {
+      await proxy?.close().catch(() => {});
       this.active = false;
-      rmSync(temporary, { recursive: true, force: true, maxRetries: 1 });
+      if (temporary !== undefined) rmSync(temporary, { recursive: true, force: true, maxRetries: 1 });
       throw error;
     }
     return {
@@ -133,9 +143,10 @@ export class MacosSeatbeltManagedAuthLaunch implements CodexManagedAuthLaunch {
       release: async stopped => {
         if (released) return true;
         if (!stopped || !rangeExited) return false;
+        try { await proxy?.close(); } catch { return false; }
         released = true;
         this.active = false;
-        rmSync(temporary, { recursive: true, force: true, maxRetries: 1 });
+        if (temporary !== undefined) rmSync(temporary, { recursive: true, force: true, maxRetries: 1 });
         return true;
       },
     };
@@ -144,4 +155,22 @@ export class MacosSeatbeltManagedAuthLaunch implements CodexManagedAuthLaunch {
 
 export function createMacosSeatbeltManagedAuthLaunch(options: MacosSeatbeltManagedAuthLaunchOptions): MacosSeatbeltManagedAuthLaunch {
   return new MacosSeatbeltManagedAuthLaunch(options);
+}
+
+function managedAuthEnvironment(temporary: string, codexHome: string, proxy: string): NodeJS.ProcessEnv {
+  let parsed: URL;
+  try { parsed = new URL(proxy); }
+  catch { throw new DevkitError("INVALID_MANAGED_AUTH_EGRESS_PROXY"); }
+  if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1" || !parsed.port || !parsed.username || !parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new DevkitError("INVALID_MANAGED_AUTH_EGRESS_PROXY");
+  }
+  return {
+    ...appServerEnvironment(temporary, codexHome),
+    HTTP_PROXY: proxy,
+    HTTPS_PROXY: proxy,
+    http_proxy: proxy,
+    https_proxy: proxy,
+    NO_PROXY: "",
+    no_proxy: "",
+  };
 }

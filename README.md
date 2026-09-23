@@ -23,10 +23,12 @@ seam 使用 `account/read`、受管 ChatGPT 的浏览器/设备码 `account/logi
 token-refresh 请求；账户状态不暴露 email/token，登录 URL/设备码也只作为内存中的宿主展示
 材料存在。`PrivateCodexStateRoot` 现在会建立权限为 0700、且与候选/控制根不重叠的持久
 `CODEX_HOME`；配套的 `MacosSeatbeltManagedAuthLaunch` 不接收候选 cwd，并在真实 Seatbelt
-夹具中证明伪包装器只能读写该状态根、不能读候选或受保护目录、更不能连回环网络。它保留状态根，
-只在退出证明后删除临时 HOME。全部账户协议测试仍使用伪 JSONL peer，未启动 OAuth、浏览器、
-Codex 或外网。该启动器刻意 deny network，尚无不可被候选命令借用的出站通道，因此不是 credential
-broker，也没有接入 native 策略或 live writer。
+夹具中证明伪包装器只能读写该状态根、不能读候选或受保护目录。它现在只允许连接每次启动时新建的
+本机代理端口；代理要求随机会话凭据，只接受 `auth.openai.com:443` 的 CONNECT，并在解析后固定公网
+IPv4 地址。Seatbelt 仍拒绝直连外网及其他回环端口。该专用账号会话没有 thread/turn/tool/candidate
+能力，因此代理不会暴露给候选命令；不可把它复用于模型 worker。退出证明后代理关闭，临时 HOME 才会删除，
+私有 `CODEX_HOME` 保留。合成测试没有启动 OAuth、浏览器或真正 Codex，也没有连 OpenAI；实际 App Server
+是否采用注入的代理环境仍待显式授权的隔离登录夹具验证。当前它未接入 native 策略或 live writer。
 
 为避免把这个缺口误解为“给当前 App Server 开网络”即可解决，新增的 `SealedPatchProposalExecutor`
 只向未来独立工作负载发送经 secret-like 检查、按值复制、相对路径的 UTF-8 源码快照，并只接受绑定快照、受限路径的 Git

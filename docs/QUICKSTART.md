@@ -30,10 +30,16 @@ complete macOS read allowlist; the production credential broker and an actual-Ap
 cancellation proof are still absent.
 
 The package also has a managed ChatGPT account-protocol client and a real Seatbelt-tested private
-`CODEX_HOME` launcher, but the launcher deliberately denies all network and is not wired into native
-policy. It has no runnable OAuth command yet: it cannot read your existing Codex login, accept an
-API key/external token, or start a model. Do not treat its presence as an OAuth or writer enablement
-switch.
+`CODEX_HOME` launcher. Its login-only process can reach just a per-session loopback proxy; that proxy
+requires a random in-memory credential and allows only `auth.openai.com:443` CONNECT traffic. This
+launcher is not wired into native policy and has no runnable OAuth command yet: it cannot read your
+existing Codex login, accept an API key/external token, or start a model. Synthetic tests do not prove
+that the installed App Server honors the proxy environment. Do not treat its presence as an OAuth or
+writer enablement switch.
+
+The intended account-auth path is only for a host explicitly trusting private repositories; it must
+not be used for public/open-source repositories. This repository version does not yet implement that
+eligibility gate or expose a login action.
 
 For the eventual model-worker path, the package also exposes a patch-only sealed-worker contract.
 It transfers a secret-checked, by-value source snapshot rather than a local workspace path and applies

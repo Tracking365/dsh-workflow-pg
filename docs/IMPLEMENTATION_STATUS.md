@@ -37,18 +37,32 @@ API keys, external ChatGPT tokens, logout, thread/turn/tool calls, and server to
 are absent or rejected. It exposes a sanitized authenticated/unauthenticated status and keeps login
 URL/device-code material only in memory. Synthetic peers cover browser success, device cancellation,
 wrong account type, external-refresh rejection, startup abort and exit/release failure. No private
-persistent home, real OAuth/browser, network transport, native policy wiring or live writer exists.
+persistent home or real OAuth/browser run exists. Native login policy wiring and a live writer remain
+absent; a separate Seatbelt launcher and auth-only proxy now provide a tested private-home network
+boundary for a one-time, user-driven compatibility check.
 
 Private managed-auth-state increment (2026-09-23): `PrivateCodexStateRoot` creates a canonical
 0700 `$CODEX_HOME` leaf only below an existing current-user-owned, non-group/world-writable host
 parent and rejects symlinks plus overlap with declared candidate/control roots; it exposes no
 read/list/copy operation. The separate
 `MacosSeatbeltManagedAuthLaunch` accepts no candidate cwd, starts only the canonical package-local
-App Server wrapper with that state root plus an ephemeral HOME, retains state while deleting only
-the temporary home after confirmed exit/release, and keeps all network denied. A real Seatbelt fake-
-wrapper fixture proves state-root write persistence and denial of candidate/control/protected-root
-reads, host-home listing and loopback egress. It has not launched Codex or OAuth, and cannot be a
-credential broker until a separately enforced non-borrowable outbound transport exists.
+App Server wrapper with that state root plus an ephemeral HOME, and retains state while deleting
+only the temporary home after confirmed exit/release.
+
+Managed-auth egress increment (2026-09-23): `ManagedAuthEgressProxy` adds a short-lived,
+authenticated CONNECT proxy bound to IPv4 loopback. It accepts only `auth.openai.com:443`, pins
+DNS-resolved public IPv4 destinations, and rejects local/reserved addresses. The auth-only Seatbelt
+profile grants TCP to just that session's localhost port while denying all other direct egress; the
+App Server still has no candidate cwd, task/tool methods, or model-worker API. Synthetic tests cover
+tunnel bytes, authentication, host/port rejection and DNS rebinding to private space. A real
+Seatbelt fake-wrapper fixture proves private-state persistence and protected-root denial, verifies
+unauthenticated requests are rejected by the private proxy, and blocks direct external and unrelated
+loopback connections. No actual Codex App Server or OAuth request has used it; compatibility with
+Codex's proxy environment remains unverified, it is not wired into native policy, and it must not be
+reused for a model worker because Seatbelt permissions inherit into descendants. OpenAI's advanced
+ChatGPT-managed automation guidance limits this usage to trusted private automation and excludes
+public/open-source repositories; a future native account-auth writer needs an explicit host-owned
+repository eligibility gate. No such gate is wired yet.
 
 Sealed patch-worker foundation (2026-09-23): because a current-process network exception cannot
 prove that App Server descendants cannot borrow it, `SealedPatchProposalExecutor` now defines a
@@ -113,9 +127,11 @@ Next work, in order:
 1. Select and implement an independently enforced sealed-worker deployment behind the new
    patch-only contract (including runtime identity, endpoint policy and stop proof). Do not loosen
    the local App Server's network profile as a substitute.
-2. In a separately isolated control workload, implement and verify non-borrowable outbound
-   transport and managed ChatGPT OAuth in an explicitly authorized disposable fixture (never
-   copy/read the existing login). Keep live disabled until both are independently proven.
+2. In an explicitly authorized disposable fixture, verify the installed App Server honors the
+   login-only proxy and completes fresh managed ChatGPT OAuth in the private home (never copy/read
+   the existing login). Keep live disabled until this is proven; add an explicit host-owned trusted-
+   private-repository eligibility gate before any native account-auth route. Model-worker egress
+   still needs an independently enforced workload and must not reuse the auth-only proxy.
 3. Wire an approved worker path to native execution only after those boundaries exist; then verify
    actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly authorized
    disposable fixtures only.

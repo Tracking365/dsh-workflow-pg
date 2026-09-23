@@ -30,6 +30,8 @@ export interface SeatbeltReadRestrictedProfilePolicy extends SeatbeltProfilePoli
   readonly allowedReadRoots: readonly string[];
   /** Exact ancestor metadata lookups required to resolve an allowed program. */
   readonly allowedReadMetadataRoots?: readonly string[];
+  /** Allow only a single TCP destination on IPv4 loopback, for a local broker. */
+  readonly loopbackConnectPort?: number;
 }
 
 export interface SeatbeltProbeFacts {
@@ -129,7 +131,8 @@ export function seatbeltProfile(policy: SeatbeltProfilePolicy): string {
  * happens to live below one of those parents.  Seatbelt processes rules in
  * declaration order for this matching selector, so the narrow read allows
  * intentionally follow ambient denials, while explicit protected roots are
- * emitted last and can never be reallowed accidentally.
+ * emitted last and can never be reallowed accidentally. Network stays denied
+ * except for the optional exact loopback TCP broker endpoint.
  */
 export function seatbeltReadRestrictedProfile(policy: SeatbeltReadRestrictedProfilePolicy): string {
   const writableRoots = uniqueDirectories(policy.writableRoots, "writableRoots");
@@ -137,6 +140,10 @@ export function seatbeltReadRestrictedProfile(policy: SeatbeltReadRestrictedProf
   const ambientDeniedReadRoots = uniqueDirectories(policy.ambientDeniedReadRoots, "ambientDeniedReadRoots");
   const allowedReadRoots = uniqueDirectories([...writableRoots, ...policy.allowedReadRoots], "allowedReadRoots");
   const allowedReadMetadataRoots = uniqueDirectories(policy.allowedReadMetadataRoots ?? [], "allowedReadMetadataRoots");
+  const loopbackConnectPort = policy.loopbackConnectPort;
+  if (loopbackConnectPort !== undefined && (!Number.isSafeInteger(loopbackConnectPort) || loopbackConnectPort < 1 || loopbackConnectPort > 65535)) {
+    throw new DevkitError("INVALID_SEATBELT_LOOPBACK_PROXY_PORT");
+  }
   if (!writableRoots.length) throw new DevkitError("INVALID_SANDBOX_ROOT", "writableRoots");
   for (const protectedRoot of deniedReadRoots) {
     if (allowedReadRoots.some((allowedRoot) => overlaps(protectedRoot, allowedRoot))) {
@@ -158,6 +165,7 @@ export function seatbeltReadRestrictedProfile(policy: SeatbeltReadRestrictedProf
     "(deny file-write*)",
     `(allow file-write* ${writable})`,
     "(deny network*)",
+    ...(loopbackConnectPort === undefined ? [] : [`(allow network-outbound (remote tcp ${sbplString(`localhost:${loopbackConnectPort}`)}))`]),
   ].join(" ");
 }
 

@@ -146,9 +146,8 @@ server error text are not returned. Browser URLs and device codes are ephemeral 
 for a future host-owned presentation, never task/artifact/event/log values. Unexpected server
 requests—including external-token refresh—receive `-32601`; only a matching login-completed
 notification can settle an attempt. The session bounds one active login, cancellation, timeout,
-exit, and release proof. This is synthetic protocol coverage, not a credential broker: its concrete
-private-home launch remains network-denied, has no browser/OAuth fixture, no narrowly scoped
-outbound transport, and is not native-policy wired or callable by a task.
+exit, and release proof. This protocol does not expose thread, turn, tool, approval, or candidate
+workspace operations, and is not native-policy wired or callable by a task.
 
 `LocalCodexApprovalBroker` is the host-side queue implementation for that interface. It creates
 an opaque one-time ID, binds resolution to the task and fingerprint, rejects on abort/expiry/
@@ -165,24 +164,41 @@ not a direct-client executor, credential broker, or proof that a live DSH writer
 
 `MacosSeatbeltAppServerClientLaunch` composes that client with the existing Seatbelt boundary
 using only the canonical `node <package-local-wrapper> app-server --stdio` shape and an empty
-explicit environment. It has no ambient-login or secret fallback. The current Seatbelt profile
+explicit environment. It has no ambient-login or secret fallback. Its task-capable Seatbelt profile
 denies all network, so this path cannot reach a model; the client/launch tests use a synthetic
-JSONL peer only. The documented future direction is a fresh private App Server home using its
-own managed ChatGPT OAuth lifecycle, rather than reading or copying the user's existing Codex
-tokens. `PrivateCodexStateRoot` now makes a canonical 0700 `$CODEX_HOME` leaf only under an
+JSONL peer only. The separate account-only path uses a fresh private App Server home and its own
+managed ChatGPT OAuth lifecycle, rather than reading or copying the user's existing Codex tokens.
+`PrivateCodexStateRoot` now makes a canonical 0700 `$CODEX_HOME` leaf only under an
 existing current-user-owned, non-group/world-writable parent and rejects any overlap with supplied
 candidate/control roots. It has no
 list/read/copy API. `MacosSeatbeltManagedAuthLaunch` uses it as `CODEX_HOME`, gives its App Server
 an ephemeral `HOME`, has no candidate cwd parameter, accepts only the exact package-local wrapper,
-and keeps the state root while deleting only the temporary HOME after exit/release proof. The actual
-Seatbelt fixture verifies a fake wrapper can write its state root but cannot read candidate/control/
-protected roots, enumerate host home, or reach loopback. This matches Codex's use of
+and keeps the state root while deleting only the temporary HOME after exit/release proof.
+`ManagedAuthEgressProxy` binds an ephemeral IPv4 loopback port, authenticates each CONNECT with a
+random per-session secret, accepts only `auth.openai.com:443`, resolves DNS itself, rejects private,
+loopback, link-local, reserved and documentation IPv4 ranges, and connects to the pinned public IPv4
+address. It does not inspect or log tunneled TLS contents. The App Server receives this proxy URL
+only in its dedicated auth-session environment. Seatbelt denies network generally and adds one exact
+`localhost:<port>` TCP exception. The actual host fixture verifies a fake wrapper can write its state
+root but cannot read candidate/control/protected roots, enumerate host home, reach an unrelated
+loopback listener, or connect directly to an external address; it can reach its private proxy and
+gets `407` for an unauthenticated CONNECT. This matches Codex's use of
 [`$CODEX_HOME`](https://developers.openai.com/zh-Hans/docs/config-file/config-reference) for local
-state without reading or copying the user's existing login. It deliberately denies all network, so
-it cannot complete OAuth or reach a model. A narrowly scoped outbound-transport design that cannot
-be borrowed by candidate commands, plus an explicit authorized OAuth fixture, still need to be
-built and exercised. Until those controls are designed, reviewed and exercised, native live
-execution remains disabled.
+state without reading or copying the user's existing login. This is an auth-only control process,
+not a model worker: the public App Server session has no task/tool capability and this proxy must not
+be reused for candidate execution. macOS Seatbelt restrictions inherit into descendants, so the
+local-proxy exception is not a general non-borrowable egress mechanism. The remaining validation is
+a disposable OAuth fixture proving the installed App Server uses the proxy; this requires explicit
+user authorization before any login state is created. No real OAuth/browser/App Server or external
+destination has been exercised by these tests. Model
+worker egress still requires an independently enforced workload. Native live execution remains
+disabled.
+
+OpenAI's advanced [ChatGPT-managed auth in CI/CD guidance](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
+describes this path for trusted private automation and explicitly says not to use it for public or
+open-source repositories. Any future native account-auth writer must therefore be host-opt-in and
+restricted to an explicitly trusted private repository class. This increment does not classify
+repositories or expose a login action, so it does not yet enforce that production eligibility rule.
 
 `sandbox-exec` remains a macOS host-test/legacy local boundary, not a production network-broker
 mechanism: the local macOS manual marks it deprecated and its sandbox restrictions inherit into
@@ -240,8 +256,9 @@ identity, or a live-review guarantee.
   for strict per-request approvals, cancellation and exit-proof release. A separate synthetic
   managed-auth account client accepts only the documented ChatGPT browser/device-code lifecycle,
   rejects external token refresh, and requires exit/release proof. Its separately tested private
-  state launch preserves only a 0700 `CODEX_HOME` and denies candidate data/network, but has no
-  OAuth, browser, or outbound transport. A patch-only sealed-worker contract now protects the
+  state launch preserves only a 0700 `CODEX_HOME`, denies candidate data, and allows only a
+  dedicated authenticated auth-host proxy; actual OAuth/browser and real App Server proxy
+  compatibility remain unverified. A patch-only sealed-worker contract now protects the
   future data handoff but has no isolated deployment. Loopback approval,
   recovery, and high-risk finding-adjudication presentations are explicitly native-policy-wired
   with synthetic authentication, CSRF, startup-failure, and unload coverage, but no direct-client

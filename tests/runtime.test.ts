@@ -179,6 +179,22 @@ test("Seatbelt command confinement builds a narrow profile and never falls back 
   });
   assert.match(readRestricted, /\(deny file-read\*/);
   assert.match(readRestricted, /\(allow file-read\*/);
+  const authNetwork = seatbeltReadRestrictedProfile({
+    writableRoots: [f.repo],
+    deniedReadRoots: [protectedRoot],
+    ambientDeniedReadRoots: [f.root],
+    allowedReadRoots: [f.repo],
+    loopbackConnectPort: 45123,
+  });
+  assert.match(authNetwork, /\(deny network\*\)/);
+  assert.match(authNetwork, /\(allow network-outbound \(remote tcp "localhost:45123"\)\)/);
+  assert.throws(() => seatbeltReadRestrictedProfile({
+    writableRoots: [f.repo],
+    deniedReadRoots: [protectedRoot],
+    ambientDeniedReadRoots: [f.root],
+    allowedReadRoots: [f.repo],
+    loopbackConnectPort: 65536,
+  }), /INVALID_SEATBELT_LOOPBACK_PROXY_PORT/);
   assert.throws(() => seatbeltReadRestrictedProfile({
     writableRoots: [f.repo],
     deniedReadRoots: [protectedRoot],
