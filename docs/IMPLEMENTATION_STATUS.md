@@ -50,6 +50,15 @@ wrapper fixture proves state-root write persistence and denial of candidate/cont
 reads, host-home listing and loopback egress. It has not launched Codex or OAuth, and cannot be a
 credential broker until a separately enforced non-borrowable outbound transport exists.
 
+Sealed patch-worker foundation (2026-09-23): because a current-process network exception cannot
+prove that App Server descendants cannot borrow it, `SealedPatchProposalExecutor` now defines a
+separate-workload handoff. It sends only a frozen by-value UTF-8 candidate snapshot (no absolute
+workspace/control/state/environment/context reference) and accepts only a bounded, same-snapshot,
+text-only Git patch under allowed non-protected paths. It requires the worker's own stop proof even
+after completion, otherwise retains the lease. Synthetic tests cover successful scoped application,
+stale/protected rejection, cancellation and unproven startup. It is not a worker implementation,
+transport, OAuth flow, or live enablement; see `docs/SEALED_WORKER_DESIGN.md`.
+
 Frozen-context increment (2026-09-23): a host can authorize exact files/directories through
 `RepositoryPolicy.contextPaths`; task `contextRefs` then freeze up to eight UTF-8 Git-base blobs
 (4 KiB each, 6 KiB total) into a private 0700/0600 manifest artifact. Task records/events retain
@@ -101,14 +110,16 @@ metadata; fixture is dependency-free JavaScript under a strict TypeScript plugin
 control-plane tests from compiler setup; trusted host supplies immutable test plans.
 
 Next work, in order:
-1. Implement and verify the non-borrowable outbound transport on the existing isolated private
-   App-Server state launch, then exercise managed ChatGPT OAuth in an explicitly authorized
-   disposable fixture (never copy/read the existing login). Keep live disabled until both are
-   independently proven.
-2. Wire the direct client to native execution only after that transport boundary exists; then
-   verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
-   authorized disposable fixtures only.
-3. Harden local adjudication/recovery and frozen-context/overlay evidence from private-local
+1. Select and implement an independently enforced sealed-worker deployment behind the new
+   patch-only contract (including runtime identity, endpoint policy and stop proof). Do not loosen
+   the local App Server's network profile as a substitute.
+2. In a separately isolated control workload, implement and verify non-borrowable outbound
+   transport and managed ChatGPT OAuth in an explicitly authorized disposable fixture (never
+   copy/read the existing login). Keep live disabled until both are independently proven.
+3. Wire an approved worker path to native execution only after those boundaries exist; then verify
+   actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly authorized
+   disposable fixtures only.
+4. Harden local adjudication/recovery and frozen-context/overlay evidence from private-local
    assertions toward independently auditable identity, process proof and framework-aware failure
    evidence. Never reclaim a lease based on age alone.
-4. Finish the original acceptance matrix before UI/feature extensions.
+5. Finish the original acceptance matrix before UI/feature extensions.

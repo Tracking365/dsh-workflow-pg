@@ -184,6 +184,17 @@ be borrowed by candidate commands, plus an explicit authorized OAuth fixture, st
 built and exercised. Until those controls are designed, reviewed and exercised, native live
 execution remains disabled.
 
+`sandbox-exec` remains a macOS host-test/legacy local boundary, not a production network-broker
+mechanism: the local macOS manual marks it deprecated and its sandbox restrictions inherit into
+descendants. `SealedPatchProposalExecutor` consequently does not relax that process's network
+policy. Instead it makes a future independently enforced worker accept an in-memory source snapshot
+with no absolute workspace/control/state/environment/context reference, and emit only a bounded,
+same-snapshot, text-only patch within allowed non-protected paths. The host requires the worker's
+own stop proof, rechecks source/scope and applies the patch noninteractively. A TypeScript worker
+implementation is not isolation; the required external workload and deployment evidence are
+specified in [`SEALED_WORKER_DESIGN.md`](SEALED_WORKER_DESIGN.md). No concrete worker, endpoint,
+OAuth, credential, or live path is wired today.
+
 A host policy may configure the separate DeepSeek reviewer with an HTTPS completions endpoint,
 fixed model and a `DSH_DEVKIT_*` credential environment-variable name. The secret itself is not
 accepted in JSON, is read only at an eventual review call, and is never handed to the Codex
@@ -230,7 +241,8 @@ identity, or a live-review guarantee.
   managed-auth account client accepts only the documented ChatGPT browser/device-code lifecycle,
   rejects external token refresh, and requires exit/release proof. Its separately tested private
   state launch preserves only a 0700 `CODEX_HOME` and denies candidate data/network, but has no
-  OAuth, browser, or outbound transport. Loopback approval,
+  OAuth, browser, or outbound transport. A patch-only sealed-worker contract now protects the
+  future data handoff but has no isolated deployment. Loopback approval,
   recovery, and high-risk finding-adjudication presentations are explicitly native-policy-wired
   with synthetic authentication, CSRF, startup-failure, and unload coverage, but no direct-client
   execution, credential broker, or actual-App-Server behavior evidence.

@@ -35,6 +35,11 @@ policy. It has no runnable OAuth command yet: it cannot read your existing Codex
 API key/external token, or start a model. Do not treat its presence as an OAuth or writer enablement
 switch.
 
+For the eventual model-worker path, the package also exposes a patch-only sealed-worker contract.
+It transfers a secret-checked, by-value source snapshot rather than a local workspace path and applies
+only a bound scoped patch after worker stop proof. It is not a deployed worker or network channel;
+read [`SEALED_WORKER_DESIGN.md`](SEALED_WORKER_DESIGN.md) before treating it as a production design.
+
 ## Evaluate the DSH control plane (headless launcher gate verified)
 
 Build and pack, then install the `.tgz` into an independent `devkit-eval` profile as shown

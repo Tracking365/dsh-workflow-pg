@@ -24,6 +24,12 @@ the launch can hold a private 0700 `$CODEX_HOME` while denying candidate data an
 that is persistent state isolation, not OAuth connectivity. It will still use the real flow only
 from a fresh private home; it will not read, copy or proxy the user's existing Codex login state.
 
+The new `SealedPatchProposalExecutor` is deliberately outside the current DSH provider wiring: it
+is a future independently isolated worker handoff, not a way to grant the provider network or a
+local candidate path. It sends by-value source content and accepts only an exact-snapshot scoped
+patch after worker stop proof. No DSH profile, Codex process, endpoint, or account state is started
+by its synthetic fixtures.
+
 Sources:
 
 - `@deepseek-ai/dsh-tools@0.1.6-alpha.2`, installed at
@@ -245,7 +251,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (123 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (128 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

@@ -28,6 +28,11 @@ token-refresh 请求；账户状态不暴露 email/token，登录 URL/设备码�
 Codex 或外网。该启动器刻意 deny network，尚无不可被候选命令借用的出站通道，因此不是 credential
 broker，也没有接入 native 策略或 live writer。
 
+为避免把这个缺口误解为“给当前 App Server 开网络”即可解决，新增的 `SealedPatchProposalExecutor`
+只向未来独立工作负载发送经 secret-like 检查、按值复制、相对路径的 UTF-8 源码快照，并只接受绑定快照、受限路径的 Git
+文本补丁；它不传递候选绝对路径、私有状态、环境、凭据或冻结宿主上下文。当前只有合成夹具，尚无
+worker、OAuth、端点或 live 接线；完整部署要求见 [sealed worker design](docs/SEALED_WORKER_DESIGN.md)。
+
 同日核心任务增加了受限的冻结上下文：宿主可在仓库策略中用 `contextPaths` 声明精确文件或
 目录白名单，任务仅可选择最多 8 个其中的相对文件。正文从任务创建时已固定的 Git 基准读取，
 只接受 UTF-8 小文本且拒绝疑似密钥；候选副本在执行器前必须逐文件哈希匹配。任务、状态与事件

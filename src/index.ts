@@ -9,6 +9,7 @@ export * from "./adapters/codex-app-server-client.js";
 export * from "./adapters/codex-managed-auth.js";
 export * from "./adapters/private-codex-state.js";
 export * from "./adapters/macos-seatbelt-managed-auth.js";
+export * from "./adapters/sealed-patch-worker.js";
 export * from "./adapters/macos-seatbelt-app-server-client.js";
 export * from "./adapters/local-approval-broker.js";
 export * from "./adapters/local-approval-control-plane.js";
