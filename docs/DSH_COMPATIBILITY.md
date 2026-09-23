@@ -19,8 +19,10 @@ The same protocol documents an App-Server-managed ChatGPT OAuth flow, including 
 login and token refresh owned by the App Server. `CodexManagedAuthSession` now has synthetic
 coverage for only that account protocol: browser/device-code start, matching completion/cancel,
 sanitized account read and rejection of external-token refresh. Its launch contract accepts no
-candidate workspace/cwd or credentials. It will still use the real flow only from a fresh private
-home; it will not read, copy or proxy the user's existing Codex login state.
+candidate workspace/cwd or credentials. A separate real Seatbelt fake-wrapper fixture now proves
+the launch can hold a private 0700 `$CODEX_HOME` while denying candidate data and all network;
+that is persistent state isolation, not OAuth connectivity. It will still use the real flow only
+from a fresh private home; it will not read, copy or proxy the user's existing Codex login state.
 
 Sources:
 
@@ -226,8 +228,8 @@ This is a provider protocol fact, not OS containment. The App Server boundary ha
 host evidence only for a fake wrapper; it denies candidate-external writes, configured reads,
 host-home directory data, TCP and Unix sockets, then removes private state after managed-range
 proof. It is not a complete macOS file-read whitelist. The candidate-parent
-path has not run inside a deployed live task. The managed-auth account client is not a private-home
-launcher, OAuth run, or network transport. Cancellation through an actual App Server process,
+path has not run inside a deployed live task. The managed-auth account client now has a no-egress
+private-home launcher, but not an OAuth run or non-borrowable network transport. Cancellation through an actual App Server process,
 provider-specific wire edge cases, actual-App-Server cancellation, an authenticated human
 approval presentation connected to a direct-client executor, an independently isolated
 managed-OAuth and outbound-transport boundary, and live reviewer behavior remain
@@ -243,7 +245,7 @@ pinned; unused tsx/esbuild tooling was removed because tests run compiled JS. Th
 pins DSH 0.1.6-alpha.2, direct AgentLoop session-test core packages and optional
 subagent/Codex provider peers at 0.1.6-alpha.2, and Cordis 4.0.3; this removes the invalid
 root peer produced by Cordis 4.0.2. `npm run check`,
-`npm test` (120 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
+`npm test` (123 tests), `npm run demo`, `npm run test:pack`, `npm run test:launcher`, and
 `npm run test:codex-provider-profile`, and host-level `npm run test:seatbelt-host` passed on 2026-09-23. The launcher and
 provider-registration gates verify package/profile composition and lifecycle, not a paid or
 credentialed model interaction; the separate manual fixture above is the sole authorized

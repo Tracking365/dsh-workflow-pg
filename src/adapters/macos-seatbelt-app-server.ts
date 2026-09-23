@@ -130,7 +130,8 @@ function officialNodeModulesRoot(wrapper: string): string | undefined {
  * universal macOS read allowlist; it specifically prevents home/cache/volume
  * discovery through the App Server process.
  */
-function appServerReadProfileInputs(workspace: string, temporary: string, argv: readonly string[]): {
+/** Shared only by host-owned App Server launchers after exact argv validation. */
+export function appServerReadProfileInputs(workspace: string, temporary: string, argv: readonly string[]): {
   readonly ambientDeniedReadRoots: readonly string[];
   readonly allowedReadRoots: readonly string[];
   readonly allowedReadMetadataRoots: readonly string[];
@@ -175,14 +176,21 @@ function isExplicitEmptyEnvironment(value: NodeJS.ProcessEnv | undefined): boole
  * narrow `node <package-local-codex-wrapper> app-server --stdio` shape at the
  * boundary so an arbitrary child cannot borrow the App Server capability.
  */
-function isOfficialAppServerArgv(argv: readonly string[]): boolean {
+/** Reject any wrapper other than the package-local official App Server shape. */
+export function isOfficialAppServerArgv(argv: readonly string[]): boolean {
   const wrapper = argv[1];
   if (argv.length !== 4 || argv[0] !== process.execPath || argv[2] !== "app-server" || argv[3] !== "--stdio" || typeof wrapper !== "string") return false;
   if (!path.isAbsolute(wrapper) || wrapper.includes("\0")) return false;
   return officialNodeModulesRoot(wrapper) !== undefined;
 }
 
-function appServerEnvironment(temporary: string): NodeJS.ProcessEnv {
+/**
+ * Credential-scrubbed environment for one host-owned App Server. `codexHome`
+ * is used only by a dedicated auth launcher; candidate launches leave it
+ * absent so their state remains ephemeral beneath the private HOME.
+ */
+export function appServerEnvironment(temporary: string, codexHome?: string): NodeJS.ProcessEnv {
+  if (codexHome !== undefined && (!path.isAbsolute(codexHome) || codexHome.includes("\0"))) throw new DevkitError("APP_SERVER_BOUNDARY_REQUEST_REJECTED");
   const config = path.join(temporary, "config");
   const cache = path.join(temporary, "cache");
   const data = path.join(temporary, "data");
@@ -212,6 +220,7 @@ function appServerEnvironment(temporary: string): NodeJS.ProcessEnv {
     XDG_CONFIG_HOME: config,
     XDG_CACHE_HOME: cache,
     XDG_DATA_HOME: data,
+    ...(codexHome === undefined ? {} : { CODEX_HOME: codexHome }),
     // Avoid host Git configuration and interactive credential prompts when a
     // model asks a candidate-scoped command to inspect repository state.
     GIT_CONFIG_NOSYSTEM: "1",

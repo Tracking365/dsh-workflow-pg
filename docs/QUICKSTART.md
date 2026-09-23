@@ -29,10 +29,11 @@ unrestricted command. Its App Server boundary narrows major ambient host-data ro
 complete macOS read allowlist; the production credential broker and an actual-App-Server
 cancellation proof are still absent.
 
-The package also has a synthetic-only managed ChatGPT account-protocol client. It has no native
-policy configuration or runnable OAuth command yet: it cannot read your existing Codex login,
-accept an API key/external token, or start a model. Do not treat its presence as an OAuth or writer
-enablement switch.
+The package also has a managed ChatGPT account-protocol client and a real Seatbelt-tested private
+`CODEX_HOME` launcher, but the launcher deliberately denies all network and is not wired into native
+policy. It has no runnable OAuth command yet: it cannot read your existing Codex login, accept an
+API key/external token, or start a model. Do not treat its presence as an OAuth or writer enablement
+switch.
 
 ## Evaluate the DSH control plane (headless launcher gate verified)
 

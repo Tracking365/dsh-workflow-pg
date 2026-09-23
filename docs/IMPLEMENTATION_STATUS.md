@@ -39,6 +39,17 @@ URL/device-code material only in memory. Synthetic peers cover browser success, 
 wrong account type, external-refresh rejection, startup abort and exit/release failure. No private
 persistent home, real OAuth/browser, network transport, native policy wiring or live writer exists.
 
+Private managed-auth-state increment (2026-09-23): `PrivateCodexStateRoot` creates a canonical
+0700 `$CODEX_HOME` leaf only below an existing current-user-owned, non-group/world-writable host
+parent and rejects symlinks plus overlap with declared candidate/control roots; it exposes no
+read/list/copy operation. The separate
+`MacosSeatbeltManagedAuthLaunch` accepts no candidate cwd, starts only the canonical package-local
+App Server wrapper with that state root plus an ephemeral HOME, retains state while deleting only
+the temporary home after confirmed exit/release, and keeps all network denied. A real Seatbelt fake-
+wrapper fixture proves state-root write persistence and denial of candidate/control/protected-root
+reads, host-home listing and loopback egress. It has not launched Codex or OAuth, and cannot be a
+credential broker until a separately enforced non-borrowable outbound transport exists.
+
 Frozen-context increment (2026-09-23): a host can authorize exact files/directories through
 `RepositoryPolicy.contextPaths`; task `contextRefs` then freeze up to eight UTF-8 Git-base blobs
 (4 KiB each, 6 KiB total) into a private 0700/0600 manifest artifact. Task records/events retain
@@ -90,9 +101,10 @@ metadata; fixture is dependency-free JavaScript under a strict TypeScript plugin
 control-plane tests from compiler setup; trusted host supplies immutable test plans.
 
 Next work, in order:
-1. Implement and verify the concrete isolated App-Server-managed ChatGPT OAuth launch in a private
-   home (never copy/read the existing login), plus a model transport that cannot be borrowed by
-   candidate commands. Keep live disabled until both are independently proven.
+1. Implement and verify the non-borrowable outbound transport on the existing isolated private
+   App-Server state launch, then exercise managed ChatGPT OAuth in an explicitly authorized
+   disposable fixture (never copy/read the existing login). Keep live disabled until both are
+   independently proven.
 2. Wire the direct client to native execution only after that transport boundary exists; then
    verify actual-App-Server cancellation and the configured DeepSeek reviewer in explicitly
    authorized disposable fixtures only.

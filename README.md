@@ -21,9 +21,12 @@ provider 的自动拒绝流。它强制 ephemeral 候选线程、受限读写、
 seam 使用 `account/read`、受管 ChatGPT 的浏览器/设备码 `account/login/start` 和
 `account/login/cancel`。它拒绝 API key、外部 ChatGPT token、登出、线程/turn/工具和服务端
 token-refresh 请求；账户状态不暴露 email/token，登录 URL/设备码也只作为内存中的宿主展示
-材料存在。全部测试使用伪 JSONL peer，未启动 OAuth、浏览器、Codex 或网络。该 seam 还没有
-实现私有持久 home 或不可被候选命令借用的出站通道，因此不是 credential broker，也没有接入
-native 策略或 live writer。
+材料存在。`PrivateCodexStateRoot` 现在会建立权限为 0700、且与候选/控制根不重叠的持久
+`CODEX_HOME`；配套的 `MacosSeatbeltManagedAuthLaunch` 不接收候选 cwd，并在真实 Seatbelt
+夹具中证明伪包装器只能读写该状态根、不能读候选或受保护目录、更不能连回环网络。它保留状态根，
+只在退出证明后删除临时 HOME。全部账户协议测试仍使用伪 JSONL peer，未启动 OAuth、浏览器、
+Codex 或外网。该启动器刻意 deny network，尚无不可被候选命令借用的出站通道，因此不是 credential
+broker，也没有接入 native 策略或 live writer。
 
 同日核心任务增加了受限的冻结上下文：宿主可在仓库策略中用 `contextPaths` 声明精确文件或
 目录白名单，任务仅可选择最多 8 个其中的相对文件。正文从任务创建时已固定的 Git 基准读取，

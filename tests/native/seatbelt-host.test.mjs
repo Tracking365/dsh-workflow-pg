@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { MacosSeatbeltAppServerConfinement, MacosSeatbeltCommandConfinement, probeMacosSeatbelt, runCommand } from "../../dist/src/index.js";
+import { MacosSeatbeltAppServerConfinement, MacosSeatbeltCommandConfinement, MacosSeatbeltManagedAuthLaunch, PrivateCodexStateRoot, probeMacosSeatbelt, runCommand } from "../../dist/src/index.js";
 
 function listenLoopback(server) {
   return new Promise((resolve, reject) => {
@@ -262,5 +262,92 @@ test("the App Server boundary actually confines a Codex-shaped child without lau
     await closeServer(unixServer).catch(() => {});
     rmSync(root, { recursive: true, force: true, maxRetries: 1 });
     rmSync(unixRoot, { recursive: true, force: true, maxRetries: 1 });
+  }
+});
+
+test("the managed-auth launch preserves only private CODEX_HOME and still denies candidate/network access", { timeout: 10000 }, async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "dsh-devkit-seatbelt-managed-auth-host-"));
+  const stateParent = path.join(root, "state-parent");
+  const candidate = path.join(root, "candidate");
+  const control = path.join(root, "control");
+  const protectedRoot = path.join(root, "protected");
+  const packageBin = path.join(root, "fake-package", "node_modules", "@openai", "codex", "bin");
+  const wrapper = path.join(packageBin, "codex.js");
+  const hostHome = os.homedir();
+  const server = createServer();
+  let connections = 0;
+  server.on("connection", socket => { connections += 1; socket.destroy(); });
+  const expectedSupported = process.env.DSH_DEVKIT_REQUIRE_SEATBELT === "1";
+  try {
+    for (const directory of [stateParent, candidate, control, protectedRoot, packageBin]) mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const protectedFile = path.join(protectedRoot, "credential.txt");
+    writeFileSync(protectedFile, "synthetic-credential", { mode: 0o600 });
+    let port;
+    try {
+      port = await listenLoopback(server);
+    } catch (error) {
+      assert.equal(expectedSupported, false, `host cannot prepare the local connectivity probe: ${String(error)}`);
+      return;
+    }
+    writeFileSync(wrapper, [
+      "import fs from 'node:fs';",
+      "import net from 'node:net';",
+      "import path from 'node:path';",
+      `const result = { argv: process.argv.slice(2), cwd: process.cwd(), codexHome: process.env.CODEX_HOME, home: process.env.HOME };`,
+      "try { fs.writeFileSync(path.join(process.env.CODEX_HOME, 'state-marker.txt'), 'managed'); result.stateWriteAllowed = true; } catch { result.stateWriteAllowed = false; }",
+      `try { fs.readdirSync(${JSON.stringify(candidate)}); result.candidateReadDenied = false; } catch { result.candidateReadDenied = true; }`,
+      `try { fs.writeFileSync(${JSON.stringify(path.join(control, "forbidden.txt"))}, 'forbidden'); result.controlWriteDenied = false; } catch { result.controlWriteDenied = true; }`,
+      `try { fs.readFileSync(${JSON.stringify(protectedFile)}, 'utf8'); result.protectedReadDenied = false; } catch { result.protectedReadDenied = true; }`,
+      `try { fs.readdirSync(${JSON.stringify(hostHome)}); result.hostHomeListingDenied = false; } catch { result.hostHomeListingDenied = true; }`,
+      "result.networkDenied = await new Promise((resolve) => {",
+      `  const socket = net.createConnection({ host: '127.0.0.1', port: ${JSON.stringify(port)} });`,
+      "  const timer = setTimeout(() => { socket.destroy(); resolve(true); }, 1500);",
+      "  socket.on('connect', () => { clearTimeout(timer); socket.destroy(); resolve(false); });",
+      "  socket.on('error', () => { clearTimeout(timer); resolve(true); });",
+      "});",
+      "console.log(JSON.stringify(result));",
+      "",
+    ].join("\n"), { mode: 0o700 });
+    const state = new PrivateCodexStateRoot({ root: path.join(stateParent, "auth"), forbiddenRoots: [candidate, control, protectedRoot] });
+    const launch = new MacosSeatbeltManagedAuthLaunch({
+      subprocess: localSubprocess(),
+      wrapper,
+      state,
+      deniedReadRoots: [candidate, control, protectedRoot],
+    });
+    const capability = await launch.status();
+    if (capability.state === "unsupported") {
+      await assert.rejects(launch.prepare(new AbortController().signal), /SANDBOX_UNAVAILABLE/);
+      assert.equal(expectedSupported, false, capability.reason);
+      return;
+    }
+    const prepared = await launch.prepare(new AbortController().signal);
+    assert.ok(prepared.child.stdout);
+    assert.ok(prepared.child.stderr);
+    const output = readStream(prepared.child.stdout);
+    const errors = readStream(prepared.child.stderr);
+    const [exit, stdout, stderr] = await Promise.all([prepared.child.done, output, errors]);
+    assert.equal(exit.exitCode, 0, `${stdout}\n${stderr}`);
+    assert.equal(await prepared.child.waitForExit(), true);
+    const result = JSON.parse(stdout.trim());
+    assert.deepEqual(result.argv, ["app-server", "--stdio"]);
+    assert.equal(result.cwd, state.path);
+    assert.equal(result.codexHome, state.path);
+    assert.notEqual(result.home, state.path);
+    assert.equal(result.stateWriteAllowed, true);
+    assert.equal(result.candidateReadDenied, true);
+    assert.equal(result.controlWriteDenied, true);
+    assert.equal(result.protectedReadDenied, true);
+    assert.equal(result.hostHomeListingDenied, true);
+    assert.equal(result.networkDenied, true);
+    assert.equal(connections, 0, "the managed-auth process must not reach a loopback service");
+    assert.equal(existsSync(path.join(state.path, "state-marker.txt")), true);
+    assert.equal(existsSync(result.home), true, "ephemeral HOME remains until managed child exit is proven");
+    assert.equal(await prepared.release(true), true);
+    assert.equal(existsSync(result.home), false);
+    assert.equal(existsSync(path.join(state.path, "state-marker.txt")), true, "persistent state remains after session cleanup");
+  } finally {
+    await closeServer(server).catch(() => {});
+    rmSync(root, { recursive: true, force: true, maxRetries: 1 });
   }
 });
